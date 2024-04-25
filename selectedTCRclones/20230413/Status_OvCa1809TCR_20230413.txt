@@ -1,0 +1,3 @@
+cloneID	alphaClone	betaClone	annotated_reactivity	validation_status	NeoAg	firstTest_reactivity
+TCR1	TRAV12-1_CVVPSSKGSTLGRLYF_TRAJ18	TRBV6-1_CASSRGRGIETQYF_TRBJ2-5	reactive	ND	ND	reactive
+TCR2	TRAV14DV4_CAMKGRDDKIIF_TRAJ30	TRBV2_CASETGERREQYV_TRBJ2-7	nonreactive	ND	ND	nonreactive
