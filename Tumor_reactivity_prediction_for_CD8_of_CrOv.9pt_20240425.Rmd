@@ -1,0 +1,1003 @@
+---
+title: "Tumor_reactivity_prediction_CD8_CrOv.9pt_20240425"
+author: "Quy A. Ngo"
+date: "2024-04-25"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+options("download.file.method"="wininet") # IMPORTANT to install packages from CRAN!!!!
+
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", include = FALSE, echo = FALSE, message = FALSE, warning = FALSE)
+options(future.globals.maxSize = 48000 * 1024^2)
+setwd("C:/Users/Susan/Desktop/CrOv")
+```
+
+
+```{r load libraries}
+library(tidyverse)
+library(pROC)
+#library(yardstick)
+library(sqldf)
+library(gmodels)
+library(caret)
+library(lattice)
+library(data.table)
+```
+
+
+
+# A. Prediction for the training annotated clone set
+# A1. Prepare data
+# entire cleaned CD8 set
+```{r Get avg & max clone scores for subsequent TR prediction, entire cleaned CD8 set}
+
+# Add TRTpred cell scores to previous set
+TRTpred = readRDS("TRTpred_CrOv.rds") %>% rownames_to_column(var = "barcode") %>% select(barcode, score) %>% data.table::setnames("score", "TRTpred")
+
+CD8.TRscores <- read.table("20230830_CrOv.9pt_full.pipeline/intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T) %>%
+  left_join(TRTpred) %>% select(barcode:CrOv.9pt, TRTpred, Li, Oliveira:cloneID) %>% 
+  data.table::setnames("CrOv.9pt", "CrOv")
+
+CD8.TRscores.cellNb.perClone <- CD8.TRscores %>% group_by(Patient, cloneID, annotated_reactivity) %>% 
+  summarise(cellNb = n())
+
+# Transform table to long format
+CD8.TRscores.long <- CD8.TRscores %>% pivot_longer(cols = CrOv:Lowery, names_to = "signature", values_to = "TRscore")
+signatureLevel = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery")
+CD8.TRscores.long$signature <- factor(CD8.TRscores.long$signature, levels = signatureLevel)
+CD8.TRscores.long <- CD8.TRscores.long %>% arrange(Patient, signature)
+
+
+# get average & max score per clone for each of 8 signatures
+CD8.avg.max <- CD8.TRscores.long %>% group_by(signature, Patient, cloneID) %>%
+  summarise(avgTRscore = mean(TRscore),
+            maxTRscore = max(TRscore)) %>% 
+  left_join(CD8.TRscores.cellNb.perClone)
+
+# write.table(CD8.avg.max,
+#             "CD8_CrOv.9pt_all.2509uniqueClones_with_avg.CloneScores_max.CloneScores_and_cellNumber_perClone_20240424.txt", sep = "\t", row.names = F)
+
+```
+
+
+## CD8tr subset
+```{r prepre CD8tr subset with 110 annotated clones of 923 cells for subsequent ROC analysis}
+
+# Transform to wide tables for AUC calculation
+CD8tr.max <- CD8.avg.max %>% 
+  filter(annotated_reactivity != "ND") %>% 
+  select(Patient, signature, maxTRscore, cloneID, annotated_reactivity) %>% pivot_wider(names_from = signature, values_from = maxTRscore)
+
+CD8tr.avg <- CD8.avg.max %>% 
+  filter(annotated_reactivity != "ND") %>% 
+  select(Patient, signature, avgTRscore, cloneID, annotated_reactivity) %>% pivot_wider(names_from = signature, values_from = avgTRscore)
+
+```
+
+
+
+# B. ROC analysis for 110 annotated clones of 923 cells
+# B1. with MAX clone scores
+```{r plot ROC & AUC with MAX cloneTR scores}
+# 1. 
+# 1a. calculate auc with ci of auc
+crov <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$CrOv)
+trtpred <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$TRTpred)
+li <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Li)
+
+#vdleun <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$VanDerLeun)
+oliveira <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Oliveira)
+hanada <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Hanada)
+
+chiffele <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Chiffelle)
+zheng <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Zheng)
+lowery <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Lowery)
+
+
+# # 1b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
+# test12 <- roc.test(crov, trtpred)
+# test13 <- roc.test(crov, li)
+# #test14 <- roc.test(crov, vdleun)
+# test15 <- roc.test(crov, oliveira)
+# test16 <- roc.test(crov, hanada)
+# test17 <- roc.test(crov, chiffele)
+# test18 <- roc.test(crov, zheng)
+# test19 <- roc.test(crov, lowery)
+# 
+
+# # 1c. plot ROC_AUC curves
+# pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_max.CloneScores_20240424.pdf", width = 7.7, height = 5.3)
+# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
+#      main = "AUC of each signature using max clone scores",
+#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)")
+# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# 
+# legend("bottomright",
+#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+#        lwd = 2, cex = 0.7
+# )
+# 
+# # add text for AUCs
+# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# 
+# #text(0.5, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# 
+# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.5, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.5, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# # add text for p.values of t-tests
+# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.3, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+# text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# dev.off()
+
+# 1d. save results
+#for (i in c(crov, trtpred, li, oliveira, hanada, chiffele, zheng, lowery)) {
+saveROC <- function(rocObj, sigName) {
+  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  best <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  ci <- pROC::ci(rocObj, of = "auc")
+  names(ci) <- c("CI95%low", "AUC", "CI95%high")
+  ci$signature <- sigName
+  ci <- as.data.frame(ci) %>% select(signature, 1:3)
+  l <- list(res, best, ci)
+  names(l) <- c("result", "best", "ciAUC")
+  return(l)
+}
+
+l1 <- saveROC(crov, "CrOv")
+l2 <- saveROC(trtpred, "TRTpred")
+l3 <- saveROC(li, "Li")
+#l4 <- saveROC(vdleun, "VanDerLeun")
+l5 <- saveROC(oliveira, "Oliveira")
+l6 <- saveROC(hanada, "Hanada")
+l7 <- saveROC(chiffele, "Chiffelle")
+l8 <- saveROC(zheng, "Zheng")
+l9 <- saveROC(lowery, "Lowery")
+
+Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+Res$signature <- factor(Res$signature, levels = signatureLevel)
+
+#Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+#CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+# write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(Best, "CD8_CrOv.9pt_110annotatedTCRs_ROC.bestThreshold_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+SigColor = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919")
+
+
+# plot PR curves by max Clone Scores
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_maxCloneScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
+  geom_line() +
+  #geom_point() +
+  scale_color_manual(values = SigColor) +
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by max Clone Scores")
+dev.off()
+
+
+# best thresholds for CrOv & TRTpred signatures using max Clone Scores:
+#signature	threshold	specificity	sensitivity	accuracy	tn	tp	fn	fp	npv	ppv	fdr	fpr	tpr	tnr	fnr	1-specificity	1-sensitivity	1-accuracy	1-npv	1-ppv	precision	recall	youden	closest.topleft
+
+#CrOv	0.176460057471264	0.833333333333333	0.75	0.818181818181818	75	15	5	15	0.9375	0.5	0.5	0.166666666666667	0.75	0.833333333333333	0.25	0.166666666666667	0.25	0.181818181818182	0.0625	0.5	0.5	0.75	1.58333333333333	0.0902777777777778
+
+#TRTpred	0.554684696034056	0.766666666666667	0.75	0.763636363636364	69	15	5	21	0.932432432432432	0.416666666666667	0.583333333333333	0.233333333333333	0.75	0.766666666666667	0.25	0.233333333333333	0.25	0.236363636363636	0.0675675675675675	0.583333333333333	0.416666666666667	0.75	1.51666666666667	0.116944444444444
+
+```
+
+
+# B2. with AVG clone scores
+```{r plot ROC & AUC with AVG cloneTR scores}
+# 2. 
+# 2a. calculate auc with ci of auc
+crov <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$CrOv)
+trtpred <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$TRTpred)
+li <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Li)
+
+#vdleun <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$VanDerLeun)
+oliveira <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Oliveira)
+hanada <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Hanada)
+
+chiffele <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Chiffelle)
+zheng <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Zheng)
+lowery <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Lowery)
+
+
+# # 2b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
+# test12 <- roc.test(crov, trtpred)
+# test13 <- roc.test(crov, li)
+# #test14 <- roc.test(crov, vdleun)
+# test15 <- roc.test(crov, oliveira)
+# test16 <- roc.test(crov, hanada)
+# test17 <- roc.test(crov, chiffele)
+# test18 <- roc.test(crov, zheng)
+# test19 <- roc.test(crov, lowery)
+# 
+# 
+# # 2c. plot
+# pdf("CD8_CrOv.9pt_110anotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_avg.CloneScores_20240424.pdf", width = 7.7, height = 5.3)
+# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
+#      main = "AUC of each signature using average Clone Scores",
+#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)")
+# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# 
+# legend("bottomright",
+#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+#        lwd = 2, cex = 0.7
+# )
+# 
+# # add text for AUCs
+# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# 
+# #text(0.5, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# 
+# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.5, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.5, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# # add text for p.values of t-tests
+# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.3, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+# text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# dev.off()
+
+# 2d. save results
+#for (i in c(crov, trtpred, li, oliveira, hanada, chiffele, zheng, lowery)) {
+saveROC <- function(rocObj, sigName) {
+  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  best <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  ci <- pROC::ci(rocObj, of = "auc")
+  names(ci) <- c("CI95%low", "AUC", "CI95%high")
+  ci$signature <- sigName
+  ci <- as.data.frame(ci) %>% select(signature, 1:3)
+  l <- list(res, best, ci)
+  names(l) <- c("result", "best", "ciAUC")
+  return(l)
+}
+
+l1 <- saveROC(crov, "CrOv")
+l2 <- saveROC(trtpred, "TRTpred")
+l3 <- saveROC(li, "Li")
+#l4 <- saveROC(vdleun, "VanDerLeun")
+l5 <- saveROC(oliveira, "Oliveira")
+l6 <- saveROC(hanada, "Hanada")
+l7 <- saveROC(chiffele, "Chiffelle")
+l8 <- saveROC(zheng, "Zheng")
+l9 <- saveROC(lowery, "Lowery")
+
+Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+Res$signature <- factor(Res$signature, levels = signatureLevel)
+
+# plot PR curves by average Clone Scores
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_avgCloneScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
+  geom_line() +
+  #geom_point() +
+  scale_color_manual(values = SigColor) +
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by average Clone Scores")
+dev.off()
+
+
+# Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+# CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+# 
+# write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_avg.cloneTRscores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(Best, "CD8_CrOv.9pt_110annotatedTCRs_ROC.bestThreshold_of_8signatures_using_avg.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_avg.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+# B3. with cell scores
+```{r plot ROC & AUC with cellTR scores}
+# 3.
+CD8tr.TRscores <- CD8.TRscores %>% filter(annotated_reactivity != "ND")
+
+# 3a. calculate AUC
+crov <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$CrOv)
+trtpred <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$TRTpred)
+li <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Li)
+
+#vdleun <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$VanDerLeun)
+oliveira <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Oliveira)
+hanada <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Hanada)
+
+chiffele <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Chiffelle)
+zheng <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Zheng)
+lowery <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Lowery)
+
+# # 3b. t-test of AUC between each pair of (CrOv.9pt signature vs. other signature)
+# test12 <- roc.test(crov, trtpred)
+# test13 <- roc.test(crov, li)
+# test14 <- roc.test(crov, oliveira)
+# test15 <- roc.test(crov, hanada)
+# #test16 <- roc.test(crov, vdleun)
+# test17 <- roc.test(crov, chiffele)
+# test18 <- roc.test(crov, lowery)
+# test19 <- roc.test(crov, zheng)
+# 
+# 
+# # 3c. plot
+# pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_CellScores_20240424.pdf", width = 7.7, height = 5.3)
+# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
+#      main = "AUC of each signature using Cell Scores",
+#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)"
+# )
+# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(lowery, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
+# plot(zheng, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
+# 
+# legend("bottomright",
+#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Lowery", "Zheng"),
+#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+#        lwd = 2, cex = 0.7
+# )
+# 
+# # add text for AUC values
+# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# 
+# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+# #text(0.5, 0.10, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# 
+# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.5, 0.05, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.5, 0.01, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# # add text for p.values of t-tests
+# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+# text(0.3, 0.20, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+# text(0.3, 0.15, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+# 
+# dev.off()
+
+# 3d. save results
+l1 <- saveROC(crov, "CrOv")
+l2 <- saveROC(trtpred, "TRTpred")
+l3 <- saveROC(li, "Li")
+
+l4 <- saveROC(oliveira, "Oliveira")
+l5 <- saveROC(hanada, "Hanada")
+#l6 <- saveROC(vdleun, "VanDerLeun")
+
+l7 <- saveROC(chiffele, "Chiffelle")
+l8 <- saveROC(lowery, "Lowery")
+l9 <- saveROC(zheng, "Zheng")
+
+Res <- rbind(l1$result, l2$result, l3$result, l4$result, l5$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+Res$signature <- factor(Res$signature, levels = signatureLevel)
+
+# plot PR curves by average Clone Scores
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_CellScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
+  geom_line() +
+  #geom_point() +
+  scale_color_manual(values = SigColor) +
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by Cell Scores")
+dev.off()
+
+
+# Best <- rbind(l1$best, l2$best, l3$best, l4$best, l5$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+# CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l4$ciAUC, l5$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+# 
+# write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(Best, "CD8_CrOv.9pt_110annotatedTCRs_ROC.bestThreshold_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+# manual pick for best thresholds of Cell Scores:
+#signature	threshold	specificity	sensitivity	accuracy	tn	tp	fn	fp	npv	ppv	fdr	fpr	tpr	tnr	fnr	1-specificity	1-sensitivity	1-accuracy	1-npv	1-ppv	precision	recall	youden	closest.topleft
+
+#CrOv	0.0733614942528736	0.795321637426901	0.916317991631799	0.826652221018418	544	219	20	140	0.964539007092199	0.610027855153203	0.389972144846797	0.204678362573099	0.916317991631799	0.795321637426901	0.0836820083682008	0.204678362573099	0.0836820083682008	0.173347778981582	0.0354609929078015	0.389972144846797	0.610027855153203	0.916317991631799	1.7116396290587	0.0488959106301408
+
+```
+# 20240525 STOPS HERE!!!
+
+
+
+```{r clean up}
+rm(l1,l2,l3,l4,l5,l6,l7,l8,l9, test12,test13,test14, test15, test16, test17, test18, test19, Res,
+   Best, CI, crov, trtpred, oliveira, hanada, li, chiffelle, zheng, lowery, TRTpred, signatureLevel)
+
+```
+
+
+# C. Prediction for tumor reactivity of unannotated clones
+# C1. Cell-wise prediction by CellScore of CrOv signatures
+```{r make score table for all cleaned CD8 cells with cell-wise prediction by CrOv score}
+
+# From #B, use cellScore & maxCloneScore for CrOv and maxCloneScore for TRTpred to predict
+# Best thresholds according to #B are:
+cell.threshold_CrOv = 0.0733614942528736
+
+# Cell-wise prediction by CrOv:
+CD8.TRscores.cellWisePrediction.CrOv = CD8.TRscores %>% 
+  mutate(CrOv_cellPrediction = ifelse(CrOv >= cell.threshold_CrOv, "TRcell", "NTRcell")) %>% 
+  select(barcode:CrOv, CrOv_cellPrediction, TRTpred:cloneID) %>% 
+  data.table::setnames(c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+                       c("CrOv_score", "TRTpred_score", "Li_score", "Oliveira_score", "Hanada_score", "Chiffelle_score", "Zheng_score", "Lowery_score"))
+
+write.table(CD8.TRscores.cellWisePrediction.CrOv,
+            "CD8_CrOv.9pt_all.5272cells_with_TRscores_by_8.signatures_and_cellWisePrediction_by_CrOv.signature_20240424.txt", sep = "\t", row.names = F)
+
+
+# Subset cell data to have only CrOv signature
+pred.subCD8.cellToClone <- CD8.TRscores.cellWisePrediction.CrOv %>%
+  select(barcode, Patient, cloneID, annotated_reactivity, CrOv_cellPrediction) %>% 
+  group_by(Patient, annotated_reactivity, cloneID, CrOv_cellPrediction) %>% 
+  summarise(cellNb_per_PredClass = n()) %>% 
+  arrange(Patient, cloneID, CrOv_cellPrediction) %>% 
+  data.table::setnames("CrOv_cellPrediction", "CrOv_cellPredClass") %>%
+  group_by(Patient, annotated_reactivity, cloneID) %>% 
+  mutate(cellPredClass_perc = round(100 * cellNb_per_PredClass / sum(cellNb_per_PredClass), 2)) %>% 
+  ungroup() 
+  
+TRcellPredClass = pred.subCD8.cellToClone %>% filter(CrOv_cellPredClass == "TRcell") %>% 
+  mutate(prediction_by_CrOv.CellScore.toClone = 
+           ifelse(cellPredClass_perc >= 100*2/3, "TRclone", "NTRclone"))
+
+NTRcellPredClass = pred.subCD8.cellToClone %>% filter(CrOv_cellPredClass == "NTRcell") %>% 
+  mutate(prediction_by_CrOv.CellScore.toClone = 
+           ifelse(cellPredClass_perc > 100*1/3, "NTRclone", "TRclone"))
+
+TR.NTR.cellPredClass <- rbind(TRcellPredClass, NTRcellPredClass) %>% 
+  arrange(Patient, cloneID) 
+
+pred.subCD8.cellToClone <- TR.NTR.cellPredClass %>% 
+  distinct(cloneID, .keep_all = TRUE) %>% 
+  mutate(TRcell.PredClass_perc = 
+           ifelse(CrOv_cellPredClass == "TRcell", cellPredClass_perc, 100 - cellPredClass_perc)) %>% 
+
+  mutate(status_of_CrOv.CellScore.toClone_Prediction = 
+           case_when(
+             (annotated_reactivity == "reactive" & prediction_by_CrOv.CellScore.toClone == "TRclone") ~ "TP",
+             (annotated_reactivity == "reactive" & prediction_by_CrOv.CellScore.toClone == "NTRclone") ~ "FN",
+             (annotated_reactivity == "nonreactive" & prediction_by_CrOv.CellScore.toClone == "NTRclone") ~ "TN",
+             (annotated_reactivity == "nonreactive" & prediction_by_CrOv.CellScore.toClone == "TRclone") ~ "FP",
+             (annotated_reactivity == "ND") ~ "unknown"
+           )) %>% 
+  left_join(CD8.TRscores.cellNb.perClone) %>% 
+  select(Patient:cloneID, cellNb, TRcell.PredClass_perc, prediction_by_CrOv.CellScore.toClone, status_of_CrOv.CellScore.toClone_Prediction)
+
+
+write.table(pred.subCD8.cellToClone,
+            "CD8_CrOv.9pt_all.2509.ANNOTATED.and.UNANNOTATED.clones_predictions_by.CrOv.CellScore.toClone_with_CrOv.signature_and_cellNumber_per.clone_20240424.txt", sep = "\t", row.names = F)
+
+
+
+```
+
+
+# C2. Clone-wise prediction by max CloneScore of CrOv & TRTpred signatures
+```{r CrOv max_CloneScore}
+
+maxClone.threshold_CrOv = 0.176460057471265
+maxClone.threshold_TRTpred = 0.554684696034056
+
+# Subset clone data to have only CrOv and TRTpred signatures
+subCD8.max <- CD8.avg.max %>% filter(signature %in% c("CrOv", "TRTpred")) %>% select(-avgTRscore)
+
+pred.subCD8.max <- subCD8.max %>% 
+  mutate(prediction_by.maxCloneScore =
+           case_when(
+              (signature == "CrOv" & maxTRscore >= maxClone.threshold_CrOv) ~ "TRclone",
+              (signature == "CrOv" & maxTRscore < maxClone.threshold_CrOv) ~ "NTRclone",
+              (signature == "TRTpred" & maxTRscore >= maxClone.threshold_TRTpred) ~ "TRclone",
+              (signature == "TRTpred" & maxTRscore < maxClone.threshold_TRTpred) ~ "NTRclone"
+           )) %>% 
+  mutate(status_of_maxCloneScore_Prediction = 
+           case_when(
+             (annotated_reactivity == "reactive" & prediction_by.maxCloneScore == "TRclone") ~ "TP",
+             (annotated_reactivity == "reactive" & prediction_by.maxCloneScore == "NTRclone") ~ "FN",
+             (annotated_reactivity == "nonreactive" & prediction_by.maxCloneScore == "NTRclone") ~ "TN",
+             (annotated_reactivity == "nonreactive" & prediction_by.maxCloneScore == "TRclone") ~ "FP",
+             (annotated_reactivity == "ND") ~ "unknown"
+           )) %>% 
+  data.table::setnames("maxTRscore", "maxCloneScore")
+
+
+write.table(pred.subCD8.max,
+            "CD8_CrOv.9pt_all.2509.ANNOTATED.and.UNANNOTATED.clones_predictions_by.maxCloneScore_with_CrOv.and.TRTpred.signatures_and_cellNumber_per.clone_20240424.txt", sep = "\t", row.names = F)
+
+```
+# 20240424 STOPS HERE!!!
+
+
+
+
+
+
+# Plot TR predictions for annotated set
+```{r plot clone & cell predictions for all annotated TCRs}
+
+cellCountPlot2 <- function(sigPred, sigName, cellPredDF) {
+  # 1. Plot clone prediction
+  p1 <- ggplot(CD8tr.predClone, 
+               aes(x = reorder(annotated_clone, -cellNb), y = cellNb, # reorder x-axis for plotting decreasing x-values
+                  pattern = sharePredictionStatus, fill = sigPred)) +
+    
+    geom_bar_pattern(stat = "identity",
+                    position = position_dodge(width = 1), # use "dodge" for side-by-side bars, "stack" for stacked bars
+                    color = NA, # color of bar border
+                    pattern_fill = "grey", # color of pattern
+                    pattern_density = 0.01, #size
+                    pattern_spacing = 0.01) +
+    
+    scale_pattern_manual(values = c(common = "none", different = "circle")) +
+    scale_fill_manual(values = c("gold1", "darkorange", "lightblue", "royalblue")) +
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.0,0)) +
+    ggtitle(paste("Prediction of clone & cell reactivity by", sigName, "signature")) +
+    ylab("cell count") +
+    xlab("") +
+    theme_classic() +
+    theme(aspect.ratio = 1/3, # axis size y/x
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 18, face = "bold"),
+          legend.position = "right",
+          legend.text = element_text(face = "bold")
+    ) +
+    geom_text(aes(label = cellNb), size = 1.8, color = "blue",
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    guides(pattern = guide_legend(override.aes = list(fill = "grey", color = "white"), title = "shared clone prediction"), # override default legend style
+           fill = guide_legend(override.aes = list(pattern = "none"), title = "clone prediction status")
+           )
+
+  # 2. Plot cell prediction
+    p2 <- ggplot(cellPredDF, 
+                 aes(x = reorder(annotated_clone, -cellNb), y = cell.proportion, # reorder x-axis for plotting decreasing x-values
+                  pattern = cell.prediction.class, fill = clonePrediction.status)) +
+    
+    geom_bar_pattern(stat = "identity",
+                    position = "stack", # use "dodge" for side-by-side bars, "stack" for stacked bars
+                    color = NA, # color of bar border 
+                    pattern_fill = "white", # color of pattern
+                    pattern_density = 0.01, #size
+                    pattern_spacing = 0.01) +
+    
+    scale_pattern_manual(values = c(pred.nonreactive = "none", pred.reactive = "circle")) +
+    scale_pattern_angle_manual(values = c(0, 90)) +
+    scale_fill_manual(values = c("gold1", "darkorange", "lightblue", "royalblue")) +
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+    
+    ylab("cell proportion") +
+    xlab("clone") +
+    theme_classic() +
+    theme(aspect.ratio = 1/3, # axis size y/x
+          axis.text.x = element_text(size = 4, face = "bold", angle = -30, hjust = 0.1, vjust = 0.2),
+          #axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 18, face = "bold"),
+          legend.position = "right",
+          legend.text = element_text(face = "bold")
+    ) +
+    geom_text(aes(label = cell.proportion), size = 1.8, color = "blue",
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    guides(pattern = guide_legend(override.aes = list(fill = "grey", color = "white"), title = "cell prediction class"), # override default legend style
+           #pattern_angle = guide_legend(override.aes = list(fill = "white", color = "black")),
+           fill = guide_legend(override.aes = list(pattern = "none"), title = "clone prediction status")
+           )
+    
+  pdf(paste0("intgHarCD8_CrOv.9pt_clone.and.cell.TR.prediction_for_all.110.AnnotatedTCRs_with_", sigName, ".signatures_20230921.pdf"), width = 18, height = 10)
+  print(p1 + p2 + plot_layout(ncol = 1))
+  dev.off()
+}
+
+cellCountPlot2(CD8tr.predClone$CrOv_clonePredictionStatus, "CrOv", CrOv.predCell)    
+cellCountPlot2(CD8tr.predClone$Li_clonePredictionStatus, "Li", Li.predCell) 
+
+```
+
+
+
+# 20230927 STARTS HERE!!!!!
+# Prediction for the testing UNANNOTATED clone set
+```{r histograms of the testing unannotated clones, fig.width=10, fig.height=6}
+
+`%nin%` = Negate(`%in%`)
+
+CD8.TRscores <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T) 
+CD8.TRscores.cellNb <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_2509.unique.clones_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T)
+
+## Extract the CD8 testing set comprised of all unannotated clones
+CD8te.TRscores <- CD8.TRscores %>% filter(annotated_clone == "others") # 4349 unannotated cells
+CD8te.TRscores.cellNb <- CD8te.TRscores %>% group_by(Patient, cloneID) %>% summarise(cellNb = n()) # 2399 unique unannotated clones
+
+CD8te.TRscores.long <- CD8te.TRscores %>% pivot_longer(cols = c(CrOv.9pt, Li:Lowery), names_to = "signature", values_to = "TRscore") %>% arrange(signature, cloneID) 
+
+# CD8tr max score
+CD8te.max <- CD8te.TRscores.long %>% group_by(signature, Patient, cloneID) %>% 
+  arrange(desc(TRscore)) %>% distinct(cloneID, .keep_all = TRUE) %>%
+  arrange(signature, Patient, desc(TRscore)) %>%
+  left_join(CD8te.TRscores.cellNb) %>%
+  data.table::setnames("TRscore", "maxTRscore")
+
+CD8te.max2 <- CD8te.max %>% select(signature, maxTRscore, cloneID) %>% pivot_wider(names_from = signature, values_from = maxTRscore) %>% left_join(CD8te.TRscores.cellNb)
+write.table(CD8te.max2, "intgHarCD8_CrOv.9pt_cellCounts_and_maxCloneScores_of_2399.UNANNOTATED.clones_by_9.signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# Examine the TR score histogram per signature
+pdf("intgHarCD8_CrOv.9pt_histograms_of_max.cloneTR.scores_and_cellTR.scores_of_all.2399.UNANNOTATED.clones_for_CrOv.9pt_and_Li_signatures_20230927.pdf")
+par(mfrow = c(2,2))
+for (i in c("CrOv.9pt", "Li")) {
+  df <- CD8te.max %>% filter(signature == i)
+  hist(df$maxTRscore, main = i, xlab = "max TRclone score")
+}
+for (i in c("CrOv.9pt", "Li")) {
+  df <- CD8te.TRscores.long %>% filter(signature == i)
+  hist(df$TRscore, main = i, xlab = "TRcell score")
+}
+dev.off()
+
+```
+
+
+```{r TR prediction for UNANNOTATED clones}
+
+# 1. Predict clone TR by max clone score
+# threshold for clones (as specified above)
+# threshold_CrOv.9pt = 0.176460057471264
+# threshold_Li = 0.222205555555556 
+
+CD8te.clonePred <- CD8te.max2 %>% select(Patient, cloneID, cellNb, CrOv.9pt, Li) %>%
+  mutate(threshold_CrOv.9pt = 0.176460057471264) %>% mutate(threshold_Li = 0.222205555555556) %>%
+  mutate(CrOv_clonePrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>%
+  mutate(Li_clonePrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>%
+  mutate(shareClonePrediction = 
+           ifelse(CrOv_clonePrediction == "pred.reactive" & Li_clonePrediction == "pred.reactive", "common_pred.reactive",
+                  ifelse(CrOv_clonePrediction == "pred.nonreactive" & Li_clonePrediction == "pred.nonreactive", "common_pred.nonreactive",
+                         "different_prediction"))) %>%
+  data.table::setnames(c("CrOv.9pt", "Li"), c("CrOv.9pt_maxScore", "Li_maxScore")) %>%
+  arrange(desc(cellNb)) # 2399 clones
+
+write.table(CD8te.clonePred, "intgHarCD8_CrOv.9pt_tumor.reactive.prediction_of_2399.UNANNOTATED.clones_by_max.cloneTRscores_of_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# 2. Predict cell TR by cell score then predict clone TR by >= 50% predicted reactive cells
+# threshold for cells (as specified above)
+# threshold_CrOv.9pt = 0.0733614942528736
+# threshold_Li = 0.174894444444444 
+
+CrOv.cellTRpred <- CD8te.TRscores %>% select(barcode, Patient, cloneID, CrOv.9pt) %>%
+  mutate(threshold_CrOv.9pt = 0.0733614942528736) %>%
+  mutate(CrOv_cellPrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, cloneID, CrOv_cellPrediction) %>% 
+  summarise(CrOv_count.pred.reactive = n()) %>% 
+  filter(CrOv_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8te.TRscores.cellNb) %>% 
+  replace_na(list(CrOv_cellPrediction = "pred.reactive", CrOv_count.pred.reactive = 0)) %>% 
+  mutate(CrOv_perc.pred.reactive = round(CrOv_count.pred.reactive/cellNb,2)) %>% 
+  mutate(CrOv_perc.pred.nonreactive = 1 - CrOv_perc.pred.reactive) %>% 
+  mutate(CrOv_cellclonePrediction = ifelse(CrOv_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>%
+  arrange(desc(cellNb)) %>%
+  select(Patient, cloneID, cellNb, CrOv_count.pred.reactive, CrOv_perc.pred.reactive, CrOv_perc.pred.nonreactive, CrOv_cellclonePrediction)
+
+Li.cellTRpred <- CD8te.TRscores %>% select(barcode, Patient, cloneID, Li) %>%
+  mutate(threshold_Li = 0.174894444444444) %>%
+  mutate(Li_cellPrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, cloneID, Li_cellPrediction) %>% 
+  summarise(Li_count.pred.reactive = n()) %>% 
+  filter(Li_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8te.TRscores.cellNb) %>% 
+  replace_na(list(Li_cellPrediction = "pred.reactive", Li_count.pred.reactive = 0)) %>% 
+  mutate(Li_perc.pred.reactive = round(Li_count.pred.reactive/cellNb,2)) %>% 
+  mutate(Li_perc.pred.nonreactive = 1 - Li_perc.pred.reactive) %>% 
+  mutate(Li_cellclonePrediction = ifelse(Li_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>%
+  arrange(desc(cellNb)) %>%
+  select(Patient, cloneID, cellNb, Li_count.pred.reactive, Li_perc.pred.reactive, Li_perc.pred.nonreactive, Li_cellclonePrediction)
+
+# Combine cell.clone.pred from both signatures to get common/different predictions
+CD8te.cellclonePred <- CrOv.cellTRpred %>% left_join(Li.cellTRpred) %>%
+  mutate(shareCellClonePrediction = 
+           ifelse(CrOv_cellclonePrediction == "pred.reactive" & Li_cellclonePrediction == "pred.reactive", "common_pred.reactive",
+                  ifelse(CrOv_cellclonePrediction == "pred.nonreactive" & Li_cellclonePrediction == "pred.nonreactive", "common_pred.nonreactive",
+                         "different_prediction")))
+
+write.table(CD8te.cellclonePred, "intgHarCD8_CrOv.9pt_tumor.reactive.prediction_of_2399.UNANNOTATED.clones_by_cell.scores_and_predicted.reactive.cell.proportions_of_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+```{r plotting prediction for unannotated clones}
+
+# 1. Commonly & differently predicted clones by 2 signatures
+# 1a. All patients combined
+clonePredProp <- CD8te.clonePred %>% group_by(shareClonePrediction) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "clone score") %>% data.table::setnames("shareClonePrediction", "prediction")
+
+cellclonePredProp <- CD8te.cellclonePred %>% group_by(shareCellClonePrediction) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "cell score") %>% data.table::setnames("shareCellClonePrediction", "prediction")
+
+# Combine 2 df
+PredProp <- rbind(clonePredProp, cellclonePredProp)
+PredProp$prediction <- factor(PredProp$prediction, levels = c("different_prediction", "common_pred.nonreactive", "common_pred.reactive"))
+PredProp$scoreType <- factor(PredProp$scoreType, levels = c("clone score", "cell score"))
+
+# Stacked bar plots of commonly and differently predicted clones
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 5, height = 4.5)
+ggplot(PredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  xlab("score method") + ylab("clone proportion") +
+  ggtitle("Proportion and number of clones", 
+          subtitle = "commonly and differently predicted \n by CrOv and Li signatures") +
+  scale_fill_manual(values = c("skyblue", "gold", "orange")) +
+  geom_text(aes(label = cloneNb), size = 3, position = position_stack(vjust = 0.5), color = "blue") +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0,0)) +
+  theme_classic() +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        legend.key.size = unit(0.3, "cm"),
+        legend.text = element_text(size = 7),
+        legend.title = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = -20, vjust = -0.3, hjust = 0.3)) +
+  guides(fill = guide_legend(ncol = 1))
+dev.off()
+
+
+# 1b. Per patient
+PPclonePredProp <- CD8te.clonePred %>% group_by(Patient, shareClonePrediction, .drop = F) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "clone score") %>% data.table::setnames("shareClonePrediction", "prediction")
+
+PPcellclonePredProp <- CD8te.cellclonePred %>% group_by(Patient, shareCellClonePrediction, .drop = F) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "cell score") %>% data.table::setnames("shareCellClonePrediction", "prediction")
+
+# Combine 2 DFs
+PPpredProp <- rbind(PPclonePredProp, PPcellclonePredProp)
+PPpredProp$prediction <- factor(PPpredProp$prediction, levels = c("different_prediction", "common_pred.nonreactive", "common_pred.reactive"))
+PPpredProp$scoreType <- factor(PPpredProp$scoreType, levels = c("clone score", "cell score"))
+
+# Stack bar plot per patient
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_per.patient_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 10, height = 4.5)
+ggplot(PPpredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  xlab("score method") + ylab("clone proportion") +
+  ggtitle("Per patient proportion and number of clones", 
+          subtitle = "commonly and differently predicted by CrOv and Li signatures") +
+  scale_fill_manual(values = c("skyblue", "gold", "orange")) +
+  geom_text(aes(label = cloneNb), size = 3, position = position_stack(vjust = 0.5), color = "blue") +
+  scale_x_discrete(expand = c(0,0, 0.03,0)) +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme_classic() +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        legend.key.size = unit(0.5, "cm"),
+        legend.text = element_text(size = 9),
+        legend.title = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = -20, vjust = -0.3, hjust = 0.3)) +
+  guides(fill = guide_legend(ncol = 3))
+dev.off()
+
+
+# 2. Overlaps of TR or nonTR clones predicted by both cloneScore and cellScore methods per signature
+# Commonly TR predictions by clone score & cell score methods
+CrOv_cloneTR <- CD8te.clonePred %>% filter(CrOv_clonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+CrOv_cellTR <- CD8te.cellclonePred %>% filter(CrOv_cellclonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+Li_cloneTR <- CD8te.clonePred %>% filter(Li_clonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+Li_cellTR <- CD8te.cellclonePred %>% filter(Li_cellclonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+
+# Commonly nonTR predictions by clone score & cell score methods
+CrOv_cloneNTR <- CD8te.clonePred %>% filter(CrOv_clonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+CrOv_cellNTR <- CD8te.cellclonePred %>% filter(CrOv_cellclonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+Li_cloneNTR <- CD8te.clonePred %>% filter(Li_clonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+Li_cellNTR <- CD8te.cellclonePred %>% filter(Li_cellclonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+
+# Venn of TR and nonTR
+vennPlot <- function(x, y, predType, sigName, xcol, ycol) {
+  draw.venn(list_x = x, list_y = y, list_z = NULL,
+            title = paste("predicted", predType, "clones by", sigName),
+            subtitle = "",
+            xtitle = "clone score", ytitle = "cell score",
+            x_c = xcol, y_c = ycol, xt_c = xcol, yt_c = ycol,
+            nrtype = "pct"
+          )
+}
+
+pdf("intgHarCD8_CrOv.9pt_overlaps_of_predicted.clones_by_cloneScore_and_cellScore_methods_of_CrOv.9pt_and_Li_signatures_20230927.pdf")
+v1 <- vennPlot(CrOv_cloneTR$cloneID, CrOv_cellTR$cloneID, "reactive", "CrOv", "brown1", "gold")
+v2 <- vennPlot(Li_cloneTR$cloneID, Li_cellTR$cloneID, "reactive", "Li", "brown1", "gold")
+v3 <- vennPlot(CrOv_cloneNTR$cloneID, CrOv_cellNTR$cloneID, "nonreactive", "CrOv", "purple", "seagreen")
+v4 <- vennPlot(Li_cloneTR$cloneID, Li_cellTR$cloneID, "nonreactive", "Li", "purple", "seagreen")
+dev.off()
+
+l1 <- inner_join(CrOv_cloneTR, CrOv_cellTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "CrOv_pred.reactive_clone.and.cell")
+l2 <- inner_join(Li_cloneTR, Li_cellTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "Li_pred.reactive_clone.and.cell")
+l3 <- inner_join(CrOv_cloneNTR, CrOv_cellNTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "CrOv_pred.nonreactive_clone.and.cell")
+l4 <- inner_join(Li_cloneNTR, Li_cellNTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "Li_pred.nonreactive_clone.and.cell")
+
+l <- rbind(l1, l2, l3, l4)
+write.table(l, "intgHarCD8_CrOv.9pt_overlaps_of_predicted.UNANNOTATED.clones_by_cloneScore_and_cellScore_methods_with_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+rm(l1, l2, l3, l4, v1, v2, v3, v4, CrOv_cloneTR, CrOv_cellTR, CrOv_cloneNTR, CrOv_cellNTR, Li_cloneTR, Li_cellTR, Li_cloneNTR, Li_cellNTR); gc()
+
+```
+
+
+# From here downstream use only clone Score method!!!
+```{r point plot for frequencies of predicted annotated clones, fig.width=13, fig.height=10}
+
+# CrOv
+f1 <- CD8te.clonePred %>% group_by(Patient, CrOv_clonePrediction, cellNb) %>% 
+  summarise(cloneNb = n()) %>%
+  mutate(prediction = paste0("clone_", CrOv_clonePrediction)) %>% ungroup() %>%
+  select(-CrOv_clonePrediction) %>%
+  group_by(Patient) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2))  %>%
+  data.table::setnames("cellNb", "cloneSize") %>%
+  mutate(signature = "CrOv")
+
+# Li
+f2 <- CD8te.clonePred %>% group_by(Patient, Li_clonePrediction, cellNb) %>% 
+  summarise(cloneNb = n()) %>%
+  mutate(prediction = paste0("clone_", Li_clonePrediction)) %>% ungroup() %>%
+  select(-Li_clonePrediction) %>%
+  group_by(Patient) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2))  %>%
+  data.table::setnames("cellNb", "cloneSize") %>%
+  mutate(signature = "Li")
+
+# Combine both to save as 1 table
+DF <- rbind(f1, f2)
+write.table(DF, "intgHarCD8_CrOv.9pt_per.patient_frequency.number.and.size_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", row.names = F, col.names = T)
+
+# Plot
+p1 <- ggplot(f1, aes(x = cloneProportion, y = cloneSize, color = prediction, shape = prediction)) +
+  geom_point(aes(size = cloneNb)) +
+  scale_size_continuous(breaks = c(1, 10, 20, 50, 100, 200, 300, 400)) +
+  scale_color_manual(values = c("blue", "red1")) +
+  scale_shape_manual(values = c(2, 1)) +
+  scale_y_log10() +
+  annotation_logticks(outside = F, sides = "r") +
+  #facet_wrap(~ signature, nrow = 2, strip.position = "top", scales = "fixed") +
+  facet_grid(~ Patient, switch = "x", scales = "fixed") +
+  xlab("clone frequency") + ylab("clone size (cell number per clone)") +
+  ggtitle("Frequency of predicted clones per patient by CrOv signature") +
+  theme_bw() +
+  theme(aspect.ratio = 2, # axis size y/x
+          # axis.text.x = element_text(size = 10, angle = -30, hjust = 0.1, vjust = 0.2),
+          # axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 14, face = "bold"),
+          legend.position = "top",
+          legend.text = element_text(face = "bold")
+  ) +
+  guides(size = guide_legend(override.aes = list(shape = 1), title = "number of clones"),
+         shape = guide_legend(override.aes = list(size = 3)))
+p2 <- ggplot(f2, aes(x = cloneProportion, y = cloneSize, color = prediction, shape = prediction)) +
+  geom_point(aes(size = cloneNb)) +
+  scale_size_continuous(breaks = c(1, 10, 20, 50, 100, 200, 300, 400)) +
+  scale_color_manual(values = c("blue", "red1")) +
+  scale_shape_manual(values = c(2, 1)) +
+  scale_y_log10() +
+  annotation_logticks(outside = F, sides = "r") +
+  #facet_wrap(~ signature, nrow = 2, strip.position = "top", scales = "fixed") +
+  facet_grid(~ Patient, switch = "x", scales = "fixed") +
+  xlab("clone frequency") + ylab("clone size (cell number per clone)") +
+  ggtitle("Frequency of predicted clones per patient by Li signature") +
+  theme_bw() +
+  theme(aspect.ratio = 2, # axis size y/x
+          # axis.text.x = element_text(size = 10, angle = -30, hjust = 0.1, vjust = 0.2),
+          # axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 14, face = "bold"),
+          legend.position = "top",
+          legend.text = element_text(face = "bold")) +
+  guides(size = guide_legend(override.aes = list(shape = 1), title = "number of clones"),
+         shape = guide_legend(override.aes = list(size = 3)))
+
+plot_grid(p1, p2, ncol = 1, align = "v")
+
+pdf("intgHarCD8_CrOv.9pt_per.patient_frequencies_of_predicted_UNANNOTATED.clones_grouped.by.cloneSize_with_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 13, height = 10)
+plot_grid(p1, p2, ncol = 1, align = "v")
+dev.off()
+
+```
+
+
+```{r cumulative frequency of prediction per patient, fig.width=8, fig.height=8}
+
+CF1 <- DF %>% group_by(signature, Patient, prediction) %>% summarise(cumuCloneFreq = sum(cloneProportion))
+
+CF <- DF %>% mutate(cellNb.sizeGroup = cloneSize*cloneNb) %>%
+  group_by(signature, Patient, prediction, .drop = F) %>% summarise(cellNb.of.predictionType = sum(cellNb.sizeGroup)) %>%
+  group_by(signature, Patient, .drop = F) %>% mutate(cumuCellFreq = round(cellNb.of.predictionType/sum(cellNb.of.predictionType)*100,2)) %>%
+  left_join(CF1)
+write.table(CF, "intgHarCD8_CrOv.9pt_per.patient_cumulative.frequencies_by.cellCounts.and.cloneCounts_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", row.names = F, col.names = T)
+
+pdf("intgHarCD8_per.patient_cumulative.frequencies.by.cellCounts_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 8, height = 8)
+
+p1 <- ggplot(CF, aes(x = signature, y = cumuCloneFreq, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  geom_text(aes(label = cumuCloneFreq), size = 2.5, color = "blue",
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("turquoise", "orange")) +
+  theme_classic() +
+  ggtitle("Per patient cumulative frequencies by clone counts of predicted clones") +
+  ylab("cumulative clone frequency") +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        title = element_text(face = "bold")
+        )
+
+p2 <- ggplot(CF, aes(x = signature, y = cumuCellFreq, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  geom_text(aes(label = cumuCellFreq), size = 2.5, color = "blue",
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("lightblue", "gold")) +
+  theme_classic() +
+  ggtitle("Per patient cumulative frequencies by cell counts of predicted clones") +
+  ylab("cumulative cell frequency") +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        title = element_text(face = "bold")
+        )
+
+plot_grid(p1, p2, ncol = 1, align = "v")
+dev.off()
+
+```
+
+
+
+
