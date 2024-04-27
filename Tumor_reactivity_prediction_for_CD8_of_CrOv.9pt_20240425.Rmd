@@ -1,7 +1,7 @@
 ---
 title: "Tumor_reactivity_prediction_CD8_CrOv.9pt_20240425"
 author: "Quy A. Ngo"
-date: "2024-04-25"
+date: "2024-04-27"
 output: html_document
 ---
 
@@ -181,7 +181,9 @@ l9 <- saveROC(lowery, "Lowery")
 Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
-#Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+
+Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
 #CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
 
 # write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
@@ -193,10 +195,10 @@ SigColor = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "
 
 
 # plot PR curves by max Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_maxCloneScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_maxCloneScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  #geom_point() +
+  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature)) +
   scale_color_manual(values = SigColor) +
   labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by max Clone Scores")
 dev.off()
@@ -315,17 +317,19 @@ l9 <- saveROC(lowery, "Lowery")
 Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
+Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
+
 # plot PR curves by average Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_avgCloneScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_avgCloneScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  #geom_point() +
+  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature)) +
   scale_color_manual(values = SigColor) +
   labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by average Clone Scores")
 dev.off()
 
 
-# Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
 # CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
 # 
 # write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_avg.cloneTRscores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
@@ -428,17 +432,19 @@ l9 <- saveROC(zheng, "Zheng")
 Res <- rbind(l1$result, l2$result, l3$result, l4$result, l5$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
+Best <- rbind(l1$best, l2$best, l3$best, l4$best, l5$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
+
 # plot PR curves by average Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_CellScores_for_8.signatures_20240425.pdf", width = 7, height = 5)
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_CellScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  #geom_point() +
+  geom_point(data=Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature), shape=19, size=2) +
   scale_color_manual(values = SigColor) +
   labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by Cell Scores")
 dev.off()
 
 
-# Best <- rbind(l1$best, l2$best, l3$best, l4$best, l5$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
 # CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l4$ciAUC, l5$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
 # 
 # write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
@@ -451,7 +457,7 @@ dev.off()
 #CrOv	0.0733614942528736	0.795321637426901	0.916317991631799	0.826652221018418	544	219	20	140	0.964539007092199	0.610027855153203	0.389972144846797	0.204678362573099	0.916317991631799	0.795321637426901	0.0836820083682008	0.204678362573099	0.0836820083682008	0.173347778981582	0.0354609929078015	0.389972144846797	0.610027855153203	0.916317991631799	1.7116396290587	0.0488959106301408
 
 ```
-# 20240525 STOPS HERE!!!
+# 20240525 & 20240427 STOP HERE!!!
 
 
 
