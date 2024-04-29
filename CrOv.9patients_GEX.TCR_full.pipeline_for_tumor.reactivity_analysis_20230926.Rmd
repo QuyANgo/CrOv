@@ -1,0 +1,3658 @@
+---
+title: "CrOv.9patients full pipeline for tumor reactivity analysis - SB.BN - 20230830 - 20230916 -20230926"
+author: "Quy A. Ngo"
+date: "26-Sep-2023"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", include = FALSE, echo = FALSE, message = FALSE, warning = FALSE)
+options(future.globals.maxSize = 48000 * 1024^2)
+setwd("/home/localadmin/Desktop/RESEARCH/SBobisse/Analysis/CrOv_TCR.GEX/20230830_CrOv.9pt_full.pipeline")
+```
+
+
+```{r load libraries}
+# library(Seurat)
+# library(harmony)
+# 
+# library(Matrix)
+# library(scater)
+# library(scran)
+# library(clustree)
+# 
+# library(SingleR)
+# library(celldex)
+# 
+# library(UCell)
+#library(AUCell)
+
+library(BioVenn)
+
+library(tidyverse)
+library(stringr)
+library(rstatix)
+library(ggpubr)
+library(ggridges)
+library(ggpattern)
+library(cowplot)
+library(patchwork)
+library(EnhancedVolcano)
+library(scales)
+library(plotly)
+library(RColorBrewer)
+library(randomcoloR)
+library(viridis)
+
+# library(pROC)
+# library(sqldf)
+# library(gmodels)
+# library(caret)
+# library(lattice)
+
+# library(biomaRt)
+
+# library(eulerr)
+# library(ggVennDiagram)
+# library(nVennR)
+# library(grImport2)
+# library(rsvg)
+
+# library(knitr)
+# library(kableExtra)
+# library(reactable)
+
+`%nin%` = Negate(`%in%`)
+```
+# 20230927 STARTS at LINE 2945
+
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 1. Get GEX data
+```{r load GEX data}
+
+## Load raw dataset (10x Genomics format)
+mainDir <- "/home/localadmin/Desktop/RESEARCH/SBobisse"
+
+# get expression matrices
+get.sc.exp.mat <- function(i, ...){
+  dataDir <- paste0("/media/localadmin/Disk 6To/RESEARCH/SBobisse/cellranger/GEX/", 
+                    i, "/outs/filtered_feature_bc_matrix")
+  print(dataDir)
+  print(list.files(dataDir))
+  Seurat::Read10X(data.dir = dataDir)
+}
+
+nameAll <- c("CrCp4", "CrCp5", "CrCp7", "CrCm4", "CrCm6",
+             "OvCa1637", "OvCa1682", "OvCa1809", "OvCa210")
+nameGEX <- c("CrCp4GEX", "CrCp5GEX", "CrCp7GEX", "CrCm4GEX", "CrCm6GEX",
+             "OvCa1637GEX", "OvCa1682GEX", "OvCa1809GEX", "OvCa210GEX")
+listGEX <- lapply(nameGEX, get.sc.exp.mat)
+
+# IMPORTANT : Make sure name list matches the order of loaded data list!!!
+names(listGEX) <- nameGEX
+names(listGEX)
+#str(listGEX[[1]])
+
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 2. Get all cells from VDJ data
+``` {r get TCR contig annotations from TCR-cellranger results for individual patients}
+
+nameTCR <- c("CrCp4TCR", "CrCp5TCR", "CrCp7TCR", "CrCm4TCR", "CrCm6TCR",
+             "OvCa1637TCR", "OvCa1682TCR", "OvCa1809TCR", "OvCa210TCR")
+
+# Fetch all contigs (regardless of chain number)
+TCRcontig <- function(i) {
+  contig <- data.table::fread(paste0(mainDir, "/Analysis/CrOv_TCR.GEX/ContigAnnotation/" , i, "VDJ_all_contig_annotations_20220627.csv")) %>% 
+    filter(is_cell == "TRUE" & full_length == "TRUE" & productive == "TRUE") %>% 
+    select(barcode, contig_id, chain, cdr3, v_gene, j_gene, raw_clonotype_id) %>% 
+    data.table::setnames("raw_clonotype_id", "Clonotype") %>%
+    unite(col = cdr3_clone, v_gene, cdr3, j_gene) #%>% 
+    #group_by(barcode) %>% filter(n() < 4)
+    
+  chA <- contig %>% filter(chain == "TRA") %>% arrange(barcode, contig_id) 
+  dA <- chA %>% group_by(barcode) %>% dplyr::summarise(chainA = paste0(cdr3_clone, collapse = ";"))
+  chB <- contig %>% filter(chain == "TRB") %>% arrange(barcode, contig_id) 
+  dB <- chB %>% group_by(barcode) %>% dplyr::summarise(chainB = paste0(cdr3_clone, collapse = ";"))
+  dAB <- full_join(dA, dB, by = "barcode")
+
+  uniqContig <- contig %>% distinct(barcode, .keep_all = T) %>%
+    select(barcode, Clonotype) %>%
+    left_join(dAB, by = "barcode") #%>%
+    # separate(chainA, c("TRA_1", "TRA_2"), "; ") %>% 
+    # separate(chainB, c("TRB_1", "TRB_2"), "; ") 
+  write.table(dAB, paste0(i, "_all.cells_with.TCR_20230830.txt"),
+               append = F, quote = F, row.names = F, sep = "\t")
+  rm(chA, chB, dA, dB, contig); invisible(gc()); gc()
+  return(dAB)
+}
+
+listTCRcontig <- lapply(nameAll, TCRcontig)
+names(listTCRcontig) <- nameTCR
+lapply(listTCRcontig, dim)
+
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 3. Subset GEX samples matching cells having tested TCRs with annotated tumor-reactivity & NeoAg status
+```{r get selected TCR clone list containing clone status assignment from SB & BN}
+
+### CAREFUL: this list needs to be ERROR-FREE, same format as scTCR, and no duplicate!!!
+TCRtest <- function(i) {
+  data.table::fread(paste0(mainDir, "/Analysis/CrOv_TCR.GEX/selectedTCRclones/20230504/Status_", i, "TCR_20230504.txt"))
+  }
+
+# load TCR clone list
+listTCRtest <- lapply(nameAll, TCRtest)
+names(listTCRtest) <- nameTCR
+lapply(listTCRtest, dim)
+
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 4. Get cells with tested TCRs from VDJ data
+```{r extract cells with tested TCRs}
+
+extractCellwithTCRtest <- function(contig, testTCR, splName) {
+  spl <- left_join(contig, testTCR, by = c("chainA" = "alphaClone", "chainB" = "betaClone")) %>% 
+    data.table::setnames(c("chainA", "chainB"), c("alphaClone", "betaClone")) %>% 
+    arrange(desc(cloneID)) %>%
+    replace(is.na(.), "ND") %>% 
+    filter(alphaClone != "ND" & betaClone != "ND" )
+  write.table(spl, paste0(splName, "_all.cells_with.pair.testedTCR_20230504.txt"),
+              append = F, quote = F, row.names = F, sep = "\t")
+  return(spl)
+}
+
+listTCRcontigTest <- Map(extractCellwithTCRtest, listTCRcontig, listTCRtest, nameAll)
+
+# Sanity check
+for (i in 1:9) {
+  print(i); print(unique(listTCRtest[[i]]$cloneID)); 
+  print(str_sort(c(unique(listTCRcontigTest[[i]]$cloneID)), numeric = T))
+}
+
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 5. Combine GEX barcodes and TCRcontigs (including tested TCR info)
+```{r Get cell barcode lists for all GEX samples & combine all needed variables}
+
+# test with 1 sample
+# GEX <- listGEX[[1]]
+# TCR <- listTCRcontig[[1]]
+# testTCR <- listTCRcontigTest[[1]]
+
+combine.GEX.TCR <- function(spl, GEX, TCR, testTCR) {
+  spl <- data.frame(barcode = colnames(GEX)) %>% 
+    left_join(TCR, by = "barcode") %>%
+    left_join(testTCR, by = "barcode") %>% 
+    select(!alphaClone) %>% select(!betaClone) %>% 
+    data.table::setnames(c("chainA", "chainB"), c("alphaClone", "betaClone")) %>% 
+    arrange(desc(cloneID)) %>%
+    replace(is.na(.), "ND") %>%
+    mutate(alphaClone = ifelse(alphaClone == "ND", "undetected", alphaClone)) %>% 
+    mutate(betaClone = ifelse(betaClone == "ND", "undetected", betaClone)) %>% 
+    mutate(cloneID = ifelse(cloneID == "ND" & (alphaClone != "undetected" | betaClone != "undetected"), "unassignedTCR", cloneID)) %>% 
+    mutate(TCR_presence = ifelse(cloneID == "ND", "no", "yes")) %>% 
+    column_to_rownames(var = "barcode")
+}
+listGEXTCR <- Map(combine.GEX.TCR, nameAll, listGEX, listTCRcontig, listTCRcontigTest)
+head(listGEXTCR[[7]])
+tail(listGEXTCR[[7]])
+lapply(listGEXTCR, dim)
+unique(listGEXTCR[[7]]$cloneID)
+unique(listGEXTCR[[7]]$annotated_reactivity)
+unique(listGEXTCR[[7]]$validation_status)
+unique(listGEXTCR[[7]]$NeoAg)
+unique(listGEXTCR[[7]]$firstTest_reactivity)
+
+```
+
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+# 6. Create Seurat object with 9 patients CrCp4, CrCp5, CrCp7, CrCm4, CrCm6, OvCa1637, OvCa1682, OvCa1809, OvCa210
+```{r Create a Seurat object with the raw (non-normalized data) excluding CrCm4}
+
+create.seurat <- function(GEXdata, splName, GEXTCRdata, ...){
+  CreateSeuratObject(counts = GEXdata, 
+                     project = splName,
+                     min.cells = 5, #round(0.01*ncol(i)), 
+                     min.features = 200,
+                     meta.data = GEXTCRdata)
+}
+
+listSeu <- mapply(create.seurat, listGEX, nameAll, listGEXTCR)
+names(listSeu) <- nameAll
+
+# rename active.ident to sample name
+listSeu <- mapply(SetIdent, listSeu, value = nameAll)
+str(listSeu)
+head(listSeu[[1]]@meta.data)
+
+# merge all Seurat objects into 1
+CrOv <- merge(x = listSeu[[1]],
+                y = listSeu[2:9],
+                project = "CrOv",
+                add.cell.ids = nameAll,
+                merge.data = FALSE #TRUE if all samples were normalized the same way, merge the data slot instead of just the counts
+                )
+
+# Add percent.mt
+CrOv[["percent.mt"]] <- PercentageFeatureSet(CrOv, pattern = "^MT-")
+
+# Filter Cr
+CrOv <- subset(CrOv, 
+               subset = nFeature_RNA <= 7000 & nFeature_RNA >= 200 &
+                        nCount_RNA <= 50000 & 
+                        percent.mt <= 20)
+
+# Add percent.ribo
+CrOv[["percent.ribo"]] <- PercentageFeatureSet(CrOv, pattern = "^RP[SL][[:digit:]]")
+
+# Add CELL CYCLE MARKERS from Tirosh et al 2015 to meta.data (already in Seurat)  
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes  
+CrOv <- CellCycleScoring(CrOv,
+                         s.features = s.genes, 
+                         g2m.features = g2m.genes, 
+                         set.ident = F)
+CrOv$CCdiff <- CrOv$S.Score - CrOv$G2M.Score
+
+dim(CrOv)
+
+# Set new identity and add patientID as identity class
+CrOv <- SetIdent(CrOv, value = "orig.ident")
+CrOv$Patient <- CrOv$orig.ident
+head(CrOv@meta.data,3)
+
+CrOv$cloneID <- paste(CrOv$Patient, CrOv$cloneID, sep = "_")
+
+# sort cloneID
+cloneID.ord <- str_sort(c(unique(CrOv$cloneID)), numeric = T)
+CrOv$cloneID <- factor(CrOv$cloneID, levels = cloneID.ord)
+
+unique(CrOv$Patient)
+unique(CrOv$firstTest_reactivity)
+unique(CrOv$annotated_reactivity)
+unique(CrOv$benchmark_reactivity)
+unique(CrOv$validation_status)
+unique(CrOv$NeoAg)
+unique(CrOv$TCR_presence)
+unique(CrOv$Phase)
+cloneID.ord
+
+```
+# VERIFY: Only 2 cells of CrCm4_TCR6 (ND tumor-reactivity) were not included (not passing QC for Seurat object).
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+```{r Run Seurat pipeline to normalize, eval=FALSE}
+
+# Remove Ig & TRA/TRB genes from the clustering
+counts <- GetAssayData(CrOv, assay = "RNA")
+counts <- counts[-grep("^TRAV|^TRAC|^TRAJ|^TRBV|^TRBC|^TRBJ|^IGH|^IGL|^IGK",rownames(counts)),]
+#counts <- counts[-grep("^IGH|^IGL|^IGK|^RP[SL][[:digit:]]",rownames(counts)),]
+CrOv <- subset(CrOv, features = rownames(counts))
+
+saveRDS(CrOv, "CrOv.9patients_from_indv.sample_not.norm_no.Ig.TR.genes_20230830.rds") ### USE THIS for all SUBSETS!!!
+
+rm(counts, listSeu, listGEX, listGEXTCR, listTCRcontig, listTCRcontigTest, listTCRtest, i);invisible(gc()); gc()
+
+obj <- as.SingleCellExperiment(CrOv)
+
+# Pre-cluster with 100 cells/cluster
+# normalize pre-clustered data with scater
+# transform sc object back to Seurat object
+cl100 = scran::quickCluster(obj, min.size = 100) # can change this default min.size
+obj = scran::computeSumFactors(obj, cluster = cl100)
+obj= scater::logNormCounts(obj,
+                           log = T,
+                           transform = "log",
+                           pseudo_count = 1)
+obj <- as.Seurat(obj, counts = "counts", data = "logcounts")
+obj <- SetIdent(obj, value = "orig.ident")
+
+```
+
+
+```{r verify CD8 cells absent from second signature of 20230405}
+# 
+# CD8notSecond <- read.table("../20230412_CrOv/CD8cells_absent_from_tumor.reactive.signature_of.20230405_20230412.txt",
+#                            sep = "\t", header = T) # signatures with missing cells from TCRx.2 clones
+# 
+# check <- FetchData(obj, vars = c("cloneID", "firstTest_reactivity", "CD8A", "CD8B", "CD4")) %>%
+#   filter(firstTest_reactivity != "ND") %>%
+#   rownames_to_column(var = "barcode") %>%
+#   filter(barcode %in% CD8notSecond$barcode) # 73 of 93 cells present here with valid TCR cloneID!
+# 
+# notThird <- CD8notSecond %>% filter(barcode %nin% check$barcode) # manual inspection shows all 20 cells absent here are ND for annotated_reactivity 
+# 
+# rm(CD8notSecond, notThird, check)
+
+# -> OK to proceed
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+```{r regress & scale normalized merged object, eval=FALSE}
+
+# regress & scale
+obj <- ScaleData(obj, 
+                 features = rownames(obj),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "CCdiff",
+                                     "percent.mt", "percent.ribo"))
+# Find HVGs using default parameters
+obj <- FindVariableFeatures(obj,
+                            selection.method = "vst",
+                            nfeatures = 2000,
+                            mean.function = ExpMean,
+                            dispersion.function = LogVMR,
+                            num.bin = 40,
+                            binning.method = "equal_width", # "equal_frequency"
+                            mean.cutoff = c(0.1, 8), #c(0.0125, 4),
+                            dispersion.cutoff = c(1, Inf)) #c(0, Inf)) # c(0, 0.4)
+
+# Dimensional reduction with PCA (already have pca reduction from individual samples, this is the PCA for merged data)
+obj <- RunPCA(obj,
+              features = VariableFeatures(obj),
+              npcs = 50,
+              ndims.print = 1:10,
+              nfeatures.print = 10,
+              reduction.key = 'PC_',
+              reduction.name = 'PCA')
+
+saveRDS(obj, "CrOv.9patients_norm.regress.hvg.pca_20230504.rds")
+
+```
+
+
+# RUN, USING SEURAT OBJECT ON 20230504 !!!
+```{r QC graphics of norm.scale data, eval=FALSE}
+
+obj <- readRDS("../20230504_CrOv.9patients/CrOv.9patients_norm.regress.hvg.pca_20230504.rds")
+
+# Merged data histograms
+pdf("CrOv.9patients_QC.histograms_20230830.pdf", width = 16, height = 7)
+par(mfrow = c(1,4))
+hist(obj$nCount_RNA, freq = T, col = 'wheat',
+     main = "CrOv.9patients count numbers",
+     xlab = "count numbers")
+hist(obj$nFeature_RNA, col = 'wheat', 
+     main = "CrOv.9patients gene numbers",
+     xlab = "gene numbers")
+hist(obj$percent.mt, col = 'wheat', 
+     main = "CrOv.9patientsr % MT genes",
+     xlab = "percentage")
+hist(obj$percent.ribo, col = 'wheat', 
+     main = "CrOv.9patients % Rb genes",
+     xlab = "percentage")
+dev.off()
+
+# check gene expression before, after normalization, regression & scaling
+pdf("CrOv.9patients_QC.UMIcounts_before&after_normalization-regress.scaling_20230830.pdf", width = 12, height = 7)
+par(mfrow = c(1,3))
+hist(colSums(obj@assays$RNA@counts),
+     breaks = 100,
+     col = 'wheat',
+     main = "before normalization",
+     xlab = "Sum of expression")
+hist(colSums(obj@assays$RNA@data),
+     breaks = 100,
+     col = 'wheat',
+     main = "after normalization",
+     xlab = "Sum of expression")
+hist(colSums(obj@assays$RNA@scale.data),
+     breaks = 100,
+     col = 'wheat',
+     main = "after norm-regress-scaling",
+     xlab = "Sum of expression")
+dev.off()
+  
+pdf("CrOv.9patients_QC.featureScatter_20230830.pdf", width = 16, height = 9)
+p1 <- FeatureScatter(obj, pt.size = 0.1, feature1 = "nCount_RNA", feature2 = "percent.mt")
+p2 <- FeatureScatter(obj, pt.size = 0.1, feature1 = "nCount_RNA", feature2 = "percent.ribo")
+p3 <- FeatureScatter(obj, pt.size = 0.1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+p1 + p2 + p3
+dev.off()
+  
+pdf("CrOv.9patients_QC.violinPlots_20230830.pdf", width = 12, height = 26)
+VlnPlot(obj, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"),
+        pt.size = 0,
+        ncol = 1)
+dev.off()
+
+# Visualize PCA
+pdf("CrOv.9patients_PCA_color.by_cohort_and_patient_20230830.pdf", width = 16, height = 6)
+DimPlot(obj, 
+        dims = c(1, 2),
+        group.by = c("Patient"),
+        reduction = "PCA"
+       )
+dev.off()
+
+pdf("CrOv.9patients_PCA_color.by_cohort_&_split.by_patient_20230830.pdf", width = 36, height = 4)
+DimPlot(obj, 
+        dims = c(1, 2),
+        split.by = "Patient",
+        reduction = "PCA"
+        )
+dev.off()
+
+#rm(p1,p2,p3, cl100, g2m.genes, s.genes); invisible(gc()); gc()
+rm(obj, p1, p2, p3); gc(); invisible(gc())
+
+```
+
+
+# NOT RUN, USED SEURAT OBJECT ON 20230504 !!!
+```{r run Harmony on merged data to correct PCA, eval=FALSE}
+# "Samples" is the variable with the highest batch effect
+
+intgHar <- RunHarmony(
+  object = obj,
+  group.by.vars = c("Patient"), # cCrariates to be remCred, affected by theta & lambda below
+  reduction = "PCA",
+  dims.use = 1:50, # default all PCs
+  theta = 2, # default; larger for more diverse clusters, 0 for no diversity
+  lambda = 1, # default; smaller results in more aggressive correction
+  sigma = 0.1, # default; larger results in cells assigned to more cluster
+  #nclust = NULL, # 1 = simple linear regression
+  #tau = 0, # expected number of cells per cluster, protection against Crerclustering small datasets with larger ones
+  block.size = 0.01, # default; larger -> faster but less accurate
+  max.iter.harmony = 10,
+  max.iter.cluster = 20,
+  epsilon.cluster = -Inf, # set to -Inf to never stop convergence early
+  epsilon.harmony = -Inf, # set to -Inf to never stop convergence early
+  plot_convergence = TRUE,
+  verbose = TRUE,
+  reference_values = NULL,
+  reduction.save = "Harmony",
+  assay.use = "RNA",
+  project.dim = T
+)
+
+intgHar$ident <- NULL
+saveRDS(intgHar, "intgHar_from_CrOv.9patients_20230504.rds") # SAVED in EXTERNAL DISK 6Tb!!!!
+rm(obj); invisible(gc()); gc()
+
+```
+
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# 20230830 RUN FROM HERE, USING HARMONY OBJECT SAVED IN EXTERNAL DISK 6Tb !!!
+``` {r visualization}
+
+intgHar <- readRDS("/media/localadmin/Disk 6To/RESEARCH/SBobisse/Analysis/CrOv_TCR.GEX/20230504_CrOv.9patients/intgHar_from_CrOv.9patients_20230504.rds")
+
+# Visualize Harmony-corrected PCA
+pdf("intgHar_CrOv.9patients_correctedPCs_color.by_patient_20230830.pdf", width = 16, height = 4)
+DimPlot(intgHar, 
+        dims = c(1, 2),
+        group.by = c("Patient"), # current active.ident
+        reduction = "Harmony")
+dev.off()
+
+pdf("intgHar_CrOv.9patients_correctedPCs_split.by_patient_20230830.pdf", width = 32, height = 4)
+DimPlot(intgHar, 
+        dims = c(1, 2),
+        split.by = "Patient",
+        reduction = "Harmony"
+        )
+dev.off()
+
+# VizDimLoading plot
+pdf("intgHar_CrOv.9patients_topGenes_associated_with_50Harmonys_20230830.pdf", width = 22, height = 50)
+VizDimLoadings(intgHar, dims = 1:50, reduction = "Harmony", ncol = 5) + # patchwork object
+  plot_annotation(title = "CrOv.9patients top genes associated with 50 Harmonys")
+dev.off()
+
+# Heatmap of top 20 HVGs associated with the first 50 Harmonys/PCs
+pdf("intgHar_CrOv.9patients_heatmap_of_top20.HVGs_50Harmonys_20230830.pdf", width = 14, height = 30)
+DimHeatmap(intgHar, dims = 1:50, cells = 500, nfeatures = 20, ncol = 5,
+           reduction = 'Harmony', assays = 'RNA', slot = 'scale.data',
+           balanced = TRUE, combine = TRUE, fast = FALSE) +
+  plot_annotation("CrOv.9patients - heatmap of top 20 HVGs in 50 Harmonys")
+dev.off()
+
+# Find the best numbers of harmony/ PCs
+pdf("intgHar_CrOv.9patients_ElbowPlot_20230830.pdf")
+ElbowPlot(intgHar, ndims = 50, reduction = "Harmony")
+dev.off()
+
+```
+
+
+# NOT RUN !!!
+```{r find optimal k and res for umap with 25pcs, eval=FALSE}
+
+# 30 PCs identified from Elbow plot, VizDimLoading & heatmap for Harmony and 50 PCs for non-integrated data
+for (k in c(20, 25, 30)) {
+  intgH <- FindNeighbors(intgHar, 
+                         reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                         dims = 1:30, # as found by Elbow plot, heatmap & VizLoading
+                         k.param = k, # default 20, can also test 30
+                         annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                         )
+  intgH <- FindClusters(intgH, 
+                        #algorithm = 4, # 4 is Leiden, default 1 is classical Louvain
+                        resolution = seq(0.1, 1, 0.1))
+  # Use clustree to look at clusterings at different resolution
+  pdf(paste0("intgHar_CrOv.9patients_clustree.30pc.k", k, "_20230830.pdf"), width = 9, height = 16)
+  print(clustree(intgH, prefix = "RNA_snn_res."))
+  dev.off()
+  rm(intgH); invisible(gc()); gc()
+}
+
+```
+
+
+# RUN !!!!!!!!!!!
+```{r Re-find neighbors & clusters with selected pc, k & optimal resolution, then umap, include=FALSE}
+
+# From above results, select 30pc and k30 with 0.5res
+intgHar <- FindNeighbors(intgHar, 
+                         reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                         dims = 1:30, # as found by Elbow plot
+                         k.param = 30, # default 20, can also test 30
+                         annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                         )
+intgHar <- FindClusters(intgHar, resolution = 0.5)
+
+## Tabulate cells by cluster ID, replicate, or both
+cellNumber <- c(table(Idents(intgHar)))
+cell_proportion <- c(prop.table(table(Idents(intgHar))))
+clustInfo <- data.frame(cellNumber, cell_proportion)
+clustInfo <- rownames_to_column(clustInfo, var = "clusterID")
+write.table(clustInfo, "CrOv.9patients_30pc.k30_0.5res_table_20230830.txt",
+            append = F, quote = F, row.names = F, col.names = T, sep = "\t")
+
+intgHar <- RunUMAP(intgHar,
+                   reduction = "Harmony",  
+                   dims = 1:30,
+                   n.neighbors = 30, #default 30, range 5-50, large n for preserved global structure while loss of detailed local structure, use same k as in FindNeighbors for consistent results!!! 
+                   min.dist = 0.2, #default 0.3, range 0.001-0.5, large dist for evenly distributed embedded points, small for optimizing accuracy of local structure
+                   spread = 1, 
+                   metric = "cosine", #default "cosine" to separate clusters better than "euclidean"
+                   seed.use = 1)
+
+```
+
+
+
+### ------------------------------------------------------------------------
+### ------------------------------------------------------------------------
+# UMAP with various variables
+```{r Visualize harmony-embedded merged data on umap, include=TRUE, fig.width=16, fig.height=7}
+
+cluster_colors <- distinctColorPalette(length(unique(intgHar$seurat_clusters)))
+c("#77A57B", "#D0E49F", "#8438DC", "#907382", "#C3C0DB", "#E2863E", "#D891DB", "#DCE0D5", "#71E59B", "#DDB485", "#DAD651", "#E77273", "#8EE154", "#E7AECB", "#7B9BD7", "#D653DE", "#82E6D6", "#8F75DF", "#D64E9A", "#80CADE")
+
+p1 <- DimPlot(intgHar, reduction = "umap", group.by = "seurat_clusters",
+              label = T, repel = T, label.size = 5.5,
+              cols = cluster_colors) #default active.ident = "seurat_clusters"
+p2 <- DimPlot(intgHar, reduction = "umap", label = F,
+              group.by = "Patient")
+# p3 <- DimPlot(intgHar, reduction = "umap", label = F, 
+#               group.by = "cloneID",
+#               cols = clone_colors)
+p1 + p2
+
+pdf("intgHar_CrOv.9patients_UMAP_30pc_k30_res0.5_20230830.pdf", width = 14, height = 7)
+p1+p2
+dev.off()
+
+```
+
+
+# Expression of canonical cell-type markers on umap :
+```{r feature plot canonical markers, include=TRUE,  fig.width=7, fig.height=10}
+
+DefaultAssay(intgHar) <- "RNA"
+#intgHar$ident <- NULL # VERY IMPORTANT TO GET RID OF ident class with patient name, otherwise the cluster labels take this ident class !!!
+#Idents(intgHar) <- "seurat_clusters"
+
+cellType <- c("CD3E", "CD8A", "CD4", "KIR2DL4", "CD79A", "C1QA")
+pdf("intgHar_CrOv.9pt_featurePlots_lineage.markers_20230830.pdf", width = 7, height = 10)
+print(FeaturePlot(intgHar,
+            features = cellType,
+            reduction = "umap", slot = "data",
+            cols = rev(brewer.pal(11, "Spectral")),
+            label = TRUE, repel = TRUE, label.size = 3.5, label.color = "magenta",
+            order = TRUE, by.col = TRUE, combine = T, ncol = 2
+           ) +
+  plot_annotation(title = "canonical cell lineage markers",
+                    theme = theme(plot.title = element_text(size = 20))
+    )
+)
+dev.off()
+
+```
+
+
+# Get Monaco & blueprintEncode cell labels
+```{r load Monaco reference}
+Monaco <- MonacoImmuneData(cell.ont = "none")
+blEnc <- BlueprintEncodeData(cell.ont = "none")
+```
+
+
+```{r obtain celldex data}
+
+exp <- GetAssayData(intgHar, "data")
+
+main.Monaco <- SingleR(test = exp, ref = Monaco, labels = Monaco$label.main)
+main.blEnc <- SingleR(test = exp, ref = blEnc, labels = blEnc$label.main)
+fine.Monaco <- SingleR(test = exp, ref = Monaco, labels = Monaco$label.fine)
+fine.blEnc <- SingleR(test = exp, ref = blEnc, labels = blEnc$label.fine)
+
+table(main.Monaco$pruned.labels)
+table(main.blEnc$pruned.labels)
+table(fine.Monaco$pruned.labels)
+table(fine.blEnc$pruned.labels)
+
+write.table(main.Monaco, "intgHar_CrOv.9pt_SingleRlabels.Monaco.main_20230830.txt", quote = F, sep = "\t", row.names = T, col.names = NA)
+write.table(main.blEnc, "intgHar_CrOv.9pt_SingleRlabels.blueprintEncode.main_20230830.txt", quote = F, sep = "\t", row.names = T, col.names = NA)
+write.table(fine.Monaco, "intgHar_CrOv.9pt_SingleRlabels.Monaco.fine_20230830.txt", quote = F, sep = "\t", row.names = T, col.names = NA)
+write.table(fine.blEnc, "intgHar_CrOv.9pt_SingleRlabels.blueprintEncode.fine_20230830.txt", quote = F, sep = "\t", row.names = T, col.names = NA)
+
+```
+
+
+```{r add Monaco/blueprintENCODE to intgHar}
+
+intgHar <- AddMetaData(intgHar, main.Monaco$pruned.labels, col.name = "Monaco.main")
+intgHar$Monaco.main <- factor(intgHar$Monaco.main, levels = unique(intgHar$Monaco.main))
+
+intgHar <- AddMetaData(intgHar, main.blEnc$pruned.labels, col.name = "blueprintEncode.main")
+intgHar$blueprintEncode.main <- factor(intgHar$blueprintEncode.main, levels = unique(intgHar$blueprintEncode.main))
+
+intgHar <- AddMetaData(intgHar, fine.Monaco$pruned.labels, col.name = "Monaco.fine")
+intgHar$Monaco.fine <- factor(intgHar$Monaco.fine, levels = unique(intgHar$Monaco.fine))
+
+intgHar <- AddMetaData(intgHar, fine.blEnc$pruned.labels, col.name = "blueprintEncode.fine")
+intgHar$blueprintEncode.fine <- factor(intgHar$blueprintEncode.fine, levels = unique(intgHar$blueprintEncode.fine))
+
+rm(clustInfo, exp, cell_proportion, cellNumber, Monaco, blEnc, main.Monaco, main.blEnc, fine.Monaco, fine.blEnc); invisible(gc); gc()
+
+```
+
+
+```{r assign CD4/CD8 cells}
+
+# Re-run FindClusters at resolution 5 to obtain small cluster size
+intgHar <- FindClusters(intgHar, 
+                        #algorithm = 4, #Leiden
+                        resolution = 5)
+
+# Fetch data from intgHar & assign CD8/CD4 celltype
+df <- FetchData(intgHar, slot = "data", vars = c("RNA_snn_res.5", "CD8A", "CD8B", "CD4", "blueprintEncode.main", "Monaco.main")) %>% 
+  mutate(CD8_vs_CD4 = ifelse((CD8A > 0 | CD8B > 0) & CD4 == 0, "CD8", 
+                              ifelse(CD8A == 0 & CD8B == 0 & CD4 > 0, "CD4",
+                                     ifelse((CD8A > 0 | CD8B > 0) & CD4 > 0, "DP",
+                                             "DN")))) %>%
+  rownames_to_column(var = "cellID") # total 42455 cells in intgHar object !!!
+
+# Re-assign DN cells with 75% quantile values of CD8A, CD8B & CD4 per cluster at res5
+## Calculate 75% quantile values 
+quantCD8A <- as.data.frame(tapply(df$CD8A, df$RNA_snn_res.5, function(x){quantile(x,probs=0.75)})) %>%
+  rownames_to_column(var = "cluster.res5")
+quantCD8B <- as.data.frame(tapply(df$CD8B, df$RNA_snn_res.5, function(x){quantile(x,probs=0.75)})) %>%
+  rownames_to_column(var = "cluster.res5")
+quantCD4 <- as.data.frame(tapply(df$CD4, df$RNA_snn_res.5, function(x){quantile(x,probs=0.75)})) %>%
+  rownames_to_column(var = "cluster.res5")
+quant <- left_join(quantCD8A, quantCD8B) %>% left_join(quantCD4)
+names(quant) <- c("cluster.res5", "CD8A.quant", "CD8B.quant", "CD4.quant")
+
+quant <- quant %>%
+  mutate(celltype = ifelse((CD8A.quant > 0 | CD8B.quant > 0) & CD4.quant == 0, "CD8", 
+                           ifelse(CD8A.quant == 0 & CD8B.quant == 0 & CD4.quant > 0, "CD4",
+                                  ifelse((CD8A.quant > 0 | CD8B.quant > 0) & CD4.quant > 0, "DP",
+                                         "DN")))) %>%
+  arrange(celltype)
+
+CD4cl <- quant %>% filter(celltype == "CD4")
+CD4cl <- CD4cl$cluster.res5
+CD8cl <- quant %>% filter(celltype == "CD8")
+CD8cl <- CD8cl$cluster.res5
+DPcl <- quant %>% filter(celltype == "DP")
+DPcl <- DPcl$cluster.res5
+DNcl <- quant %>% filter(celltype == "DN")
+DNcl <- DNcl$cluster.res5
+
+## Extract DN cells from df and re-assign them
+dfDN <- df %>% filter(CD8_vs_CD4 == "DN") %>% 
+  mutate(CD8_vs_CD4_75quantile = ifelse(RNA_snn_res.5 %in% CD4cl, "CD4",
+                                        ifelse(RNA_snn_res.5 %in% CD8cl, "CD8",
+                                               ifelse(RNA_snn_res.5 %in% DPcl, "DP",
+                                                      "DN")))) # 23045 re-assigned DN cells!!!
+## Extract non-DN cells from df
+dfOthers <- df %>% filter(CD8_vs_CD4 != "DN") %>%
+  mutate(CD8_vs_CD4_75quantile = CD8_vs_CD4) # 19410 non-DN cells !!!
+
+## Combine dfOthers & dfDN to get complete df with CD4/CD8 cell types
+dfAll <- rbind(dfOthers, dfDN) %>%
+  mutate(CD8_vs_CD4_bpEncMonaco = 
+           ifelse(CD8_vs_CD4 %in% c("DN", "DP") & 
+                  blueprintEncode.main == "CD8+ T-cells" & Monaco.main == "CD8+ T cells", "CD8",
+                  CD8_vs_CD4)) # consensus CD8+ T cells from blueprintEncode & Monaco labels for DN & DP
+
+meta <- df %>% select(cellID) %>% left_join(dfAll, by = c("cellID")) %>%
+  column_to_rownames(var = "cellID") %>% replace(is.na(.), "unknown") %>% 
+  select(CD8_vs_CD4, CD8_vs_CD4_75quantile, CD8_vs_CD4_bpEncMonaco, blueprintEncode.main, Monaco.main)
+
+# Sanity check for CD8 cell counts of each label category
+cd8Type <- meta %>% filter(CD8_vs_CD4 == "CD8") # 7991 cells
+cd8Quant <- meta %>% filter(CD8_vs_CD4_75quantile == "CD8") # 10225 cells
+cd8BPMon <- meta %>% filter(CD8_vs_CD4_bpEncMonaco == "CD8") # 9483 cells
+cd8BP <- meta %>% filter(blueprintEncode.main == "CD8+ T-cells") # 16488 cells
+cd8Mon <- meta %>% filter(Monaco.main == "CD8+ T cells") # 7682 cells
+
+# Add CD4/CD8 cell types to intgHar
+intgHar <- AddMetaData(intgHar, meta)
+
+# Factorize
+intgHar$Patient <- factor(intgHar$Patient, levels = c(unique(intgHar$Patient)))
+intgHar$Phase <- factor(intgHar$Phase, levels = c("G1", "S", "G2M"))
+intgHar$TCR_presence <- factor(intgHar$TCR_presence, levels = c("yes", "no"))
+intgHar$annotated_reactivity <- factor(intgHar$annotated_reactivity, levels = c("reactive", "nonreactive", "ND"))
+intgHar$firstTest_reactivity <- factor(intgHar$firstTest_reactivity, levels = c("reactive", "nonreactive", "ND"))
+intgHar$benchmark_reactivity <- factor(intgHar$benchmark_reactivity, levels = c("reactive", "nonreactive", "ND"))
+intgHar$CD8_vs_CD4 <- factor(intgHar$CD8_vs_CD4, levels = c("CD8", "CD4", "DP", "DN"))
+intgHar$CD8_vs_CD4_75quantile <- factor(intgHar$CD8_vs_CD4_75quantile, levels = c("CD8", "CD4", "DP", "DN"))
+intgHar$CD8_vs_CD4_bpEncMonaco <- factor(intgHar$CD8_vs_CD4_bpEncMonaco, levels = c("CD8", "CD4", "DP", "DN", "unknown"))
+
+unique(intgHar$Patient)
+unique(intgHar$Phase)
+unique(intgHar$TCR_presence)
+unique(intgHar$annotated_reactivity)
+unique(intgHar$firstTest_reactivity)
+unique(intgHar$benchmark_reactivity)
+unique(intgHar$CD8_vs_CD4)
+unique(intgHar$CD8_vs_CD4_75quantile)
+unique(intgHar$CD8_vs_CD4_bpEncMonaco)
+
+saveRDS(intgHar, "intgHar_CrOv.9patients_CD8.vs.CD4_75quantile.blueprintEncode.Monaco_20230830.rds")
+
+```
+
+
+```{r Dimplots, fig.width=11, fig.height=12}
+
+# Verify cell type assignments in fine clusters at res5
+
+cluster_colors <- c("#77A57B", "#D0E49F", "#8438DC", "#907382", "#C3C0DB", "#E2863E", "#D891DB", "#DCE0D5", "#71E59B", "#DDB485", "#DAD651", "#E77273", "#8EE154", "#E7AECB", "#7B9BD7", "#D653DE", "#82E6D6", "#8F75DF", "#D64E9A", "#80CADE")
+
+#colorRes5 <- distinctColorPalette(length(unique(intgHar$RNA_snn_res.5)))
+colorRes5 <- c("#9BA4B2", "#ECC39C", "#5EB5EE", "#ED8AE9", "#E87373", "#E5E5C3", "#DCD7E6", "#D7E8AB", "#AEC8ED", "#E9ED2C", "#51DDDA", "#D59260", "#CB56E4", "#9FE679", "#E04E44", "#8B5993", "#C5E9DD", "#8335EC", "#EB7FA9", "#AED940", "#93624A", "#AAB76A", "#ACD4DE", "#B64893", "#E8D17D", "#EDEEE8", "#56E98D", "#A1E5A3", "#E6C0DD", "#E033EF", "#AD74ED", "#6751DE", "#6B8FD5", "#ABA493", "#AB8295", "#D7EF83", "#E24BC1", "#B098E9", "#D9CB4C", "#E67538", "#BDAEE6", "#A6E7C8", "#842BA8", "#687293", "#BD7ACD", "#EEA638", "#E73C85", "#5DA8B5", "#64E94A", "#E39893", "#6ED0EB", "#ECCAC6", "#E9A8DE", "#629B4E", "#59E6B9", "#6F7CE5", "#75A888", "#93ECEC")
+
+pA <- DimPlot(intgHar, reduction = "umap", group.by = "RNA_snn_res.5",
+             label = T, repel = T, label.size = 5,
+             cols = colorRes5
+) #default active.ident = "seurat_clusters" at res5
+pA
+p <- DimPlot(intgHar, reduction = "umap", group.by = "RNA_snn_res.0.5",
+             label = T, repel = T, label.size = 5,
+             cols = cluster_colors
+)
+p
+p0 <- DimPlot(intgHar, reduction = "umap", group.by = "CD8_vs_CD4",
+              #label = T, repel = T, label.size = 7.5,
+              cols = c("lightblue", "seagreen", "magenta", "gold1") #CD8, CD4, DP, DN
+) 
+p0
+p1 <- DimPlot(intgHar, reduction = "umap", group.by = "CD8_vs_CD4_75quantile",
+              #label = T, repel = T, label.size = 7.5,
+              cols = c("lightblue", "seagreen", "magenta", "gold1") #CD8, CD4, DP, DN
+) 
+p1
+p2 <- DimPlot(intgHar, reduction = "umap", group.by = "CD8_vs_CD4_bpEncMonaco",
+              #label = T, repel = T, label.size = 7.5,
+              cols = c("lightblue", "seagreen", "magenta", "gold1", "darkred") #CD8, CD4, DP, DN, unknown
+) 
+p2
+p3 <- DimPlot(intgHar, reduction = "umap", group.by = "Monaco.main",
+              #label = T, repel = T, label.size = 7.5,
+              cols = c("#E4D552", "#6CE0CA", "#E2675C", "blue", "#B6E479", "#E6CEDD", "#6C965C", "#7D8AD4", "#D976C7", "#8CE75B", "#75CED7")
+)
+
+p3
+p4 <- DimPlot(intgHar, reduction = "umap", group.by = "blueprintEncode.main",
+              #label = T, repel = T, label.size = 7.5,
+              cols = c("#E4D552", "#8C63E0", "#E6CEDD", "#E2675C", "#B6E479", "#6CE0CA",  "#6C965C", "#C03BE4", "#6D81CE", "#85E848", "#CBE5D9", "#D49DDD", "#CE989E", "#D867D0", "#6AC5D4", "#E1D4A0", "#92B1D8", "#B1E6AE", "#D2914E", "#DA5B92", "#67E695")
+              # CD8, NK, CD4, eryth, HSC, DC, macro, mono, B, NA
+)
+p4
+
+p5 <- DimPlot(intgHar, reduction = "umap", group.by = "firstTest_reactivity",
+              cols = c("grey95", "blue", "red"), # ND, nonreactive, reactive
+              order = c("reactive", "nonreactive", "ND")) 
+p5
+p6 <- DimPlot(intgHar, reduction = "umap", group.by = "benchmark_reactivity",
+              cols = c("grey95", "blue", "red"),
+              order = c("reactive", "nonreactive", "ND"))
+p6
+p7 <- DimPlot(intgHar, reduction = "umap", group.by = "annotated_reactivity", # both firstTest & benchmark
+              cols = c("grey95", "blue", "red"),
+              order = c("reactive", "nonreactive", "ND"))
+p7
+
+pdf("intgHar_CrOv.9patients_umaps_with_cellLabels_and_tumor.reactivity_20230830.pdf", width = 11, height = 12)
+pA; p; p0; p1; p2; p3; p4; p5; p6; p7
+dev.off()
+
+pdf("intgHar_CrOv.9patients_umaps_with_blueprintEncode.Monaco.labels_20230830.pdf", width = 21, height = 12)
+p3 + p4
+p1 + p5
+p6 + p7
+dev.off()
+
+``` 
+# 20230830 AFTERNOON STOPS HERE!!!
+
+
+# 20230830 EVENING STARTS HERE !!!
+```{r subset CD8 cells for tumor reactivity prediction by Remy Petremand}
+
+# From the above umaps, blueprintEncode.main has too many CD8+ T-cells in the CD4 clusters.
+# Therefore, use Monaco.main("CD8+ T cells", "NK cells") to subset CD8 T cells.
+# Furthermore, rescue CD8 cells from 75quantile category which are absent from Monaco.main(CD8+ & NK) but present in Monaco.main(T.cells)
+# Also, only extract cells with at least 1 TCR chain.
+
+# Subset CD8 cells
+CD8 <- subset(intgHar, subset = 
+              TCR_presence == "yes" &
+              (Monaco.main %in% c("CD8+ T cells", "NK cells") |
+               (CD8_vs_CD4_75quantile == "CD8" & Monaco.main == "T cells") 
+              )
+              )
+CD8 <- DietSeurat(CD8) 
+length(CD8$orig.ident) # 7687 cells
+
+# Verify cell types with blueprintEncode
+unique(CD8$blueprintEncode.main) # There are B, DC, Monocytes, Macrophages & NA
+
+# Subset those cells to filter out from CD8 subset
+notCD8 <- subset(CD8, subset = blueprintEncode.main %nin% c("CD8+ T-cells", "CD4+ T-cells", "NK cells"))
+notCD8@meta.data 
+# 21 cells, 20 are with non-assigned TCR, 1 is OvCa1682_TCR.H6 which is in cluster 55 (or cluster 19 at low resolution) and validation status as FP (benchmark as nonreactive whereas predicted as reactive)
+
+# -> remove these 21 cells from CD8 subset
+saveRDS(notCD8, "CrOv.9patients_notCD8subset_by_Monaco.75quantile.bpEncode_20230830.rds")
+
+# Subset CD8 further to a purer CD8+ T cell population
+CD8 <- subset(CD8, subset = blueprintEncode.main %in% c("CD8+ T-cells", "CD4+ T-cells", "NK cells"))
+length(CD8$orig.ident) # 7666 cells
+
+CD8$CD8final <- "CD8"
+CD8$ingHar_RNA_snn_res.0.5 <- CD8$RNA_snn_res.0.5
+CD8$intgHar_RNA_snn_res.5 <- CD8$RNA_snn_res.5
+
+CD8$RNA_snn_res.0.5 <- NULL
+CD8$RNA_snn_res.5 <- NULL
+
+saveRDS(CD8, "CrOv.9patients_CD8subset_by_Monaco.75quantile.bpEncode_20230830.rds") # This CD8 subset with 7666 cells, a subset of which contains all annotated TCRs (except for CrCm6_TCR_H6)  is for Remy Petremand to test his tumor reactivity predictor!!!
+
+# Subset CD8 cells having all TCRs with annotated reactivity for plotting cell count and clone count per reactivity class
+CD8reac <- subset(CD8, annotated_reactivity != "ND")
+length(CD8reac$orig.ident) # 923 cells, used only for plotting TRscored cell distribution & TR prediction performance later!!!!!!
+
+```
+
+
+
+# B. CD8 tumor reactivity signature from firstTest TCRs of 8 patients
+```{r CD8 from firstTest of 8 patients for tumor reactivity}
+
+# Subset CD8 cells having TCRs with known reactivity from firstTest with 8 patients
+CD8 <- subset(CD8, firstTest_reactivity != "ND")
+length(CD8$orig.ident) # 741 cells used for deriving CD8 TR signature !!!
+
+CD8$Patient <- factor(CD8$Patient, levels = unique(CD8$Patient))
+CD8$cloneID <- factor(CD8$cloneID, levels = c(str_sort(unique(CD8$cloneID))))
+
+saveRDS(CD8, "CrOv.8pt_CD8subset_firstTest.reactivity_used_for_CD8.tumor.reactivity.signature_20230830.rds")
+
+rm(notCD8)
+
+#rm(list = ls(all.names = T)); gc(); invisible(gc())
+
+```
+
+
+
+# NKT cell subset for mapping firstTest clones of 8 patients & benchmark clones of 3 patients
+```{r subset NKT cells }
+
+# Subset NKT cells
+NKT <- subset(intgHar, subset = 
+              TCR_presence == "yes" &
+              (Monaco.main %in% c("CD8+ T cells", "T cells", "CD4+ T cells", "NK cells") |
+               blueprintEncode.main %in% c("CD8+ T-cells", "CD4+ T-cells", "NK cells")) 
+              )
+NKT <- DietSeurat(NKT) 
+length(NKT$orig.ident) # 19695 NKT cells with at least 1 TCR chain
+
+# Verify cell types with blueprintEncode
+unique(NKT$blueprintEncode.main) # There are B, DC, Monocytes, Macrophages, Epithelial cells, HSC & NA
+unique(NKT$Monaco.main) # There are Basophils, B, DC & NA
+
+# Subset those cells to filter out later
+notNKT.bpEnc <- subset(NKT, subset = blueprintEncode.main %nin% c("CD8+ T-cells", "CD4+ T-cells", "NK cells")) # 88 cells
+notNKT.Mon <- subset(NKT, subset = Monaco.main %nin% c("CD8+ T cells", "T cells", "CD4+ T cells", "NK cells")) # 44 cells
+notNKT <- merge(notNKT.Mon, notNKT.bpEnc)
+notNKT$barcode <- names(notNKT$orig.ident) # 132 cells
+
+# -> remove these 132 cells from NKT subset
+saveRDS(notNKT, "CrOv.9patients_notNKTsubset_by_Monaco.bpEncode_20230830.rds")
+
+# Subset NKT further to a purer NKT+ T cell population
+NKT$barcode <- names(NKT$orig.ident)
+NKT <- subset(NKT, subset = barcode %nin% notNKT$barcode)
+length(NKT$orig.ident) # 19563 NKT cells for mapping firstTest and benchmark clones onto UMAPs
+
+#NKT$NKTfinal <- "NKT"
+NKT$ingHar_RNA_snn_res.0.5 <- NKT$RNA_snn_res.0.5
+NKT$intgHar_RNA_snn_res.5 <- NKT$RNA_snn_res.5
+
+NKT$RNA_snn_res.0.5 <- NULL
+NKT$RNA_snn_res.5 <- NULL
+
+saveRDS(NKT, "CrOv.9patients_NKTsubset_by_Monaco.75quantile.bpEncode_20230830.rds") # This NKT subset of 19563 cells is for Remy Petremand to test his tumor reactivity predictor!!!
+
+# Subset NKT cells having TCRs with known reactivity for plotting cell count and clone count per reactivity class later
+NKTreac <- subset(NKT, annotated_reactivity != "ND")
+length(NKTreac$orig.ident) # 1195 cells
+
+#rm(list = ls(all.names = T)); gc(); invisible(gc())
+rm(intgHar, notNKT, notNKT.bpEnc, notNKT.Mon); gc(); invisible(gc())
+
+```
+
+
+# CD8tr cell count & clone count per patient of 8 firstTest patients
+## per Patient: plot reactivity - cell counts or clone counts
+```{r prepare to plot reactivity cell/clone counts per patient or reactivity cell counts per cloneID}
+
+getReactCount <- function(seu) {
+  df <- FetchData(seu, vars = c("Patient", "firstTest_reactivity", "cloneID"))
+  
+  # cell count per patient
+  cellCount <- df %>%
+    group_by(Patient, firstTest_reactivity, .drop = T) %>%
+    summarise(cellCount = n())
+  
+  # clone count per patient
+  cloneCount <- df %>%
+    group_by(Patient, firstTest_reactivity, cloneID, .drop = T) %>%
+    summarise(cellCount = n()) %>%
+    group_by(Patient, firstTest_reactivity, .drop = T) %>%
+    summarise(cloneCount = n())
+
+  reactCount <- cellCount %>% 
+    left_join(cloneCount, by = c("Patient", "firstTest_reactivity"))
+  reactCount$firstTest_reactivity <- factor(reactCount$firstTest_reactivity, levels = c("reactive", "nonreactive"))
+  
+  rm(cellCount, cloneCount)
+  return(reactCount)
+}
+
+reactCount.perPT_CD8 <- getReactCount(CD8)
+
+```
+
+
+# per cloneID per patient: cell counts for reactivivity
+```{r function for cell count per cloneID per PT}
+
+getCellCount <- function(seu) {
+  df <- FetchData(seu, vars = c("Patient", "cloneID", "firstTest_reactivity"))
+  
+  # cell count per cloneID per patient
+  cellCount <- df %>%
+    group_by(cloneID, Patient, firstTest_reactivity, .drop = T) %>%
+    summarise(cellCount = n())
+  
+  cellCount$cloneID <- factor(cellCount$cloneID, 
+                              levels = str_sort(unique(cellCount$cloneID), numeric = T))
+  cellCount$firstTest_reactivity <- factor(cellCount$firstTest_reactivity, levels = c("reactive", "nonreactive"))
+  
+  return(cellCount)
+}
+
+cellCount_CD8 <- getCellCount(CD8)
+
+```
+
+
+# Plot cell/clone counts per PT
+```{r plot cell/clone counts per patient for reactivity}
+
+reactivityCountPlot <- function(df, count, fillName, cohort, subSet, aspectRatio) {
+  p <- ggplot(df, aes(x = Patient, y = count, fill = firstTest_reactivity)) +
+    geom_bar(stat = "identity", width = 0.9
+    ) +
+    #scale_fill_brewer() +
+    #scale_fill_manual(values = sample_colors) + #c("#BA93FB", "#FDA813", "#12D8B7","#FFF910", "lightblue") 
+    #facet_grid(~ CellLabel, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.03,0)) +
+    ggtitle(paste(cohort, subSet, "subset"),
+            subtitle = paste("firstTest Tumor Reactivity - ", fillName, "per patient")
+            ) +
+    ylab(fillName) +
+    xlab("") +
+    theme_classic() +
+    theme(aspect.ratio = aspectRatio, # axis size y/x 
+          axis.text.x = element_text(angle = -30, hjust = 0.2, vjust = 0.2),
+          axis.ticks.x = element_blank(),
+          legend.title = element_blank()
+    ) +
+    geom_text(aes(label = count), size = 2.5, 
+              position = position_stack(vjust = 0.5)) #to display text in the middle of the bar
+  
+    pdf(paste0(cohort, "_", subSet, "subset_firstTest.Tumor.Reactivity_", fillName, "_per_patient_20230830.pdf"), width = 6, height = 4)
+  print(p)
+  dev.off()
+}
+
+reactivityCountPlot(reactCount.perPT_CD8, reactCount.perPT_CD8$cellCount, "cell.counts", "CrOv.8patients", "CD8", 1/1.5)
+reactivityCountPlot(reactCount.perPT_CD8, reactCount.perPT_CD8$cloneCount, "clone.counts", "CrOv.8patients", "CD8", 1/1.5)
+
+```
+
+
+# Plot cell counts per cloneID per PT
+```{r plot cell/clone counts per patient for reactivity}
+
+cellCountPlot <- function(df, count, fillName, cohort, subSet) {
+  p <- ggplot(df, aes(x = cloneID, y = count, fill = firstTest_reactivity)) +
+    geom_bar(stat = "identity", width = 0.9
+    ) +
+    #scale_fill_brewer() +
+    #scale_fill_manual(values = sample_colors) + #c("#BA93FB", "#FDA813", "#12D8B7","#FFF910", "lightblue") 
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.03,0)) +
+    ggtitle(paste(cohort, subSet, "subset - firstTest Tumor Reactivity"),
+            subtitle = paste(fillName, "per firstTest TCR")
+            ) +
+    ylab(fillName) +
+    xlab("") +
+    theme_classic() +
+    theme(#aspect.ratio = aspectRatio, # axis size y/x 
+          #axis.text.x = element_text(angle = -30, hjust = 0.2, vjust = 0.2),
+          #axis.ticks.x = element_blank(),
+          legend.title = element_blank()
+    ) +
+    geom_text(aes(label = count), size = 2.5, 
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    coord_flip()
+  
+    pdf(paste0(cohort, "_", subSet, "subset_firstTest.Tumor.Reactivity_", fillName, "_per_testedTCR_20230830.pdf"), width = 10, height = 18)
+  print(p)
+  dev.off()
+}
+
+cellCountPlot(cellCount_CD8, cellCount_CD8$cellCount, "cell.counts", "CrOv.8patients", "CD8")
+
+```
+
+
+# CD8tr analysis
+```{r Apply re-normalization before DE analysis}
+
+seurat.pipeline <- function(seu, subSet, cohort){
+  #i <- subset(seu, subset = firstTest_reactivity %in% annotatedReactivity & Patient %in% patient)
+  i <- as.SingleCellExperiment(seu)
+  cl100 = scran::quickCluster(i, min.size = 100) # can change this default min.size
+  i = scran::computeSumFactors(i, cluster = cl100)
+  i = scater::logNormCounts(i,
+                            log = T,
+                            transform = "log",
+                            pseudo_count = 1)
+  i <- as.Seurat(i, counts = "counts", data = "logcounts")
+  Idents(i) <- "patient"
+  i <- ScaleData(i, 
+                 features = rownames(i),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "CCdiff",
+                                     "percent.mt", "percent.ribo"))
+  i <- FindVariableFeatures(i,
+                            selection.method = "vst",
+                            nfeatures = 2000,
+                            mean.function = ExpMean,
+                            dispersion.function = LogVMR,
+                            num.bin = 40,
+                            binning.method = "equal_width", # "equal_frequency"
+                            mean.cutoff = c(0.0125, 4),
+                            dispersion.cutoff = c(0, Inf))
+  i <- RunPCA(i, 
+              features = VariableFeatures(i),
+              npcs = 50,
+              ndims.print = 1:10,
+              nfeatures.print = 10,
+              reduction.name = 'pca')
+  
+  Idents(i) <- i$Patient
+  i$ident <- NULL
+  
+  saveRDS(i, paste0(cohort, "_", subSet,".subset_for_tumor.reactivity.signature_norm.scale.50pc_20230830.rds"))
+  return(i)
+}
+
+CD8 <- seurat.pipeline(CD8, "CD8reac.firstTest", "CrOv.8patients")
+
+```
+
+
+# DE for reactive vs. nonreactive
+```{r DE}
+
+# function for DE, table and volcano
+DE <- function(seu, DEclass, id1, id2, pct, test, cohort) {
+  Idents(seu) <- seu[[DEclass]] # switch identity to class used for DE
+  Idents(seu) <- as.character(Idents(seu)) # VERY IMPORTANT!!!
+  # do DE
+  Marker <- FindMarkers(seu,
+                        ident.1 = id1, ident.2 = id2,
+                        only.pos = F,
+                        min.pct = pct,
+                        logfc.threshold = 0,   # 0.58496 = 1.5x; default 0.25
+                        min.cells.feature = 3,
+                        min.cells.group = 3,
+                        pseudocount.use = 0.1, # default 1
+                        #return.thresh = 0.01, only works with FindAllMarkers
+                        assay = 'RNA',
+                        slot = 'data',
+                        #latent.vars = "SampleID", #uncomment this if use test LR!!!!!!
+                        test.use = test
+  )
+  
+  Marker <- Marker %>%
+    rownames_to_column(var = "gene") %>%
+    data.table::setnames(c("avg_log2FC", "p_val_adj"), c("log2FC", "padj"))
+  
+  # save significant DE list
+  write.table(Marker,
+              paste0(cohort, "_CD8reac.firstTest_tumor.reactivity_", id1, "_vs_", id2, "_", test, ".test_all.DEgenes_", pct, "cells_20230830.txt"),
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+  sigMarker <- Marker %>% filter(padj <= 0.05) %>% arrange(desc(log2FC))
+  write.table(sigMarker,
+              paste0(cohort, "_CD8reac.firstTest_tumor.reactivity_", id1, "_vs_", id2, "_", test, ".test_fdr5.DEgenes_", pct, "cells_20230830.txt"),
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+
+  return(Marker)
+}
+
+DE <- DE(CD8, "firstTest_reactivity", "reactive", "nonreactive", 0.1, "LR", "CrOv.8pt")
+sig1 <- DE %>% filter(padj <= 0.01 & abs(log2FC) >= 0.5) %>% arrange(-log2FC) 
+sig2 <- sig1 %>% filter(log2FC > 0.5) # This turns out to be the "best" CrOv signature!!!
+# These are 3 CrOv signatures to score patient for tumor reactive prediction AUC by Remy!!!
+
+write.table(sig1, "CrOv.8pt_CD8reac.firstTest_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.l2FC0.5.DEgenes_0.1cells_20230830.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(sig2, "CrOv.8pt_CD8reac.firstTest_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.posl2FC0.5.DEgenes_0.1cells_20230830.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+
+# REDO BELOW WITH NORMALIZED SEURAT OBJECTS ON 20230901!!! Calculate TR scores for NKT subset using 3 CrOv signatures and 8 external signatures
+```{r add tumor reactive UCell scores to NKT}
+
+# 1. 3 CrOv signatures
+# 1a) full DE fdr0.5
+deUP <- DE %>% filter(padj <= 0.05 & log2FC > 0)
+deDN <- DE %>% filter(padj <= 0.05 & log2FC < 0)
+deUP$gene <- paste0(deUP$gene, "+")
+deDN$gene <- paste0(deDN$gene, '-')
+deGenes <- c(deUP$gene, deDN$gene)
+
+# 1b) sig1 fdr0.1 l2FC0.5
+sig1UP <- sig1 %>% filter(log2FC > 0)
+sig1DN <- sig1 %>% filter(log2FC < 0)
+sig1UP$gene <- paste0(sig1UP$gene, "+")
+sig1DN$gene <- paste0(sig1DN$gene, '-')
+sig1Genes <- c(sig1UP$gene, sig1DN$gene)
+
+# 1c) sig1 fdr0.1 posl2FC0.5
+sig2Genes <- sig2$gene
+
+
+# 2. External signatures:
+Chiffelle <- c("CXCL13", "GAPDH", "TNFRSF9", "KLRC2", "RPL12", "PDCD1", "ATP5MC2", "TOX", "MIF", "SAMSN1", "ITM2A", "PARK7", "RBPJ", "LAG3", "CTLA4", "S100A4", "IL6ST", "PTPN6", "CSNK2B", "LYST")
+
+LiEXH <- c("LAG3", "HAVCR2", "PDCD1", "PTMS", "FAM3C", "IFNG", "AKAP5", "CD7", "PHLDA1", "ENTPD1", "SNAP47", "TNS3", "CXCL13", "RDH10", "DGKH", "KIR2DL4", "LYST", "MIR155HG", "RAB27A", "CSF1", "CTLA4", "TNFRSF9", "CD27", "CCL3", "ITGAE", "PAG1", "TNFRSF1B", "GALNT1", "GBP2", "MYO7A")
+
+OliveiraUP <- c("KRT86", "RDH10", "TYMS", "HMOX1", "GNG4", "CXCL13", "AFAP1L2", "ACP5", "MYO1E", "LAYN", "TNS3", "TNFSF4", "AKAP5", "HAVCR2", "ENTPD1", "SLC2A8", "AC243829.4", "ZBED2", "MCM5", "CAV1", "GOLIM4", "TRAV21", "VCAM1", "PON2", "MTSS1", "CD38", "TRBV11-2", "MS4A6A", "TOX2", "CSF1", "GALNT2", "FXYD2", "PLPP1", "LMCD1", "MYL6B", "LAG3", "HLA-DRA", "IGFLR1", "CCDC50", "CD27", "KIAA1324", "CDKN2A", "CD70", "ABHD6", "CTLA4", "PDCD1", "GEM", "NUSAP1", "TOX", "CXCR6", "NMB", "HOPX", "CLIC3", "INPP5F", "SNAP47", "TSHZ2", "HLA-DMA", "SIT1", "HLA-DRB1", "TUBB", "PYCARD", "ADGRG1", "HLA-DQA1", "PRF1", "HLA-DPA1", "PTMS", "CKS1B", "HIPK2", "CHST12", "LSP1", "FAM3C", "SLC1A4", "NUDT1", "DNPH1")
+OliveiraDN <- c("RARA", "GADD45B", "C1orf21", "AOAH", "MATK", "SATB1", "MBP", "ANTXR2", "RORA", "CCR7", "ANXA1", "BACH2", "GLUL", "TNFSF14", "AUTS2", "PERP", "EPHA4", "TCF7", "SELL", "MYC", "IL7R", "CD300A", "ITGA5", "GPR183", "KLF3", "S1PR1", "FOSB")
+OliveiraUP <- paste0(OliveiraUP, "+")
+OliveiraDN <- paste0(OliveiraDN, '-')
+Oliveira <- c(OliveiraUP, OliveiraDN)
+
+Hanada8UP <- c("BATF", "CXCL13", "LAYN", "ENTPD1", "TIGIT", "PHLDA1", "GZMB", "CD27", "CD74", "HLA-DMA", "HLA-DRA", "HLA-DRB1", "HLA-DRP1", "NKT2", "CD3D", "ARL3", "CCND2", "TPI1", "GAPDH", "ALOX5AP", "LSP1", "ITM2A", "CARS", "DUSP4", "HMOX1", "HMGN3", "CHST12", "NAP1L4")
+Hanada8DN <- c("IL7R")
+Hanada8UP <- paste0(Hanada8UP, "+")
+Hanada8DN <- paste0(Hanada8DN, '-')
+Hanada8 <- c(Hanada8UP, Hanada8DN)
+
+Hanada4UP <- c("CXCL13", "NR3C1", "ADGRG1", "NMB", "ITM2A", "ETV7", "COTL1", "B2M", "IGFL2")
+Hanada4DN <- c("MT-ND1", "MALAT1", "VIM", "EMP3")
+Hanada4UP <- paste0(Hanada4UP, "+")
+Hanada4DN <- paste0(Hanada4DN, "-")
+Hanada4 <- c(Hanada4UP, Hanada4DN)
+
+Zheng8 <- c("CXCL13", "RBPJ", "NR6A1", "SPATA4", "KRT86", "TC2N", "RGS1", "CSGALNACT1", "STOM", "GZMK", "MT-CO2", "MT-ND3", "LRRN3", "ETV1", "CD3D", "MT-ND1", "GTF2IP13", "TBC1D4", "MT-ND4L", "XIST", "IQGAP1", "ITM2C", "PHLDA1", "CARD16", "MT-CO3", "UBL5", "AOAH", "HSPA7", "TOX", "MIR155HG", "HSPA6", "LYST", "AUTS2", "MT-ND4", "SERF2", "MT-ATP6", "RPS4Y1", "NELL2", "ENSG00000196656", "RPL10P9", "BPESC1", "LAYN", "CHN1", "SRI", "POLR2G", "MTND2P28", "MTATP6P1", "MT-ND2", "CCL3L1", "NR3C1", "SLAMF7", "SEC61G", "MT-RNR2", "MT-ND5", "GOLIM4", "HECTD2", "PCED1B-AS1", "LINC00299", "CTLA4", "ENSG00000260342", "MT-ATP8", "HAVCR2", "ID2", "TMSB10", "GPM6A", "IL7R", "CCL4L2", "CRIP1", "TXLNGY", "IL6ST", "MT-CYB", "SIRPG", "COMMD6", "TNFRSF18", "DDX3Y", "MRPL33", "RNF19A", "SLC4A7", "RUNX2", "SLA", "MYC", "GCHFR", "LINC-PINT", "ENSG00000273247", "RPL21", "DHRS3", "TIGIT", "SYNGR1", "SYNGR2", "MYADM", "NDUFA3", "LINC02446", "FAM157A", "BTLA", "NAP1L4", "KDM5D", "RPL41", "RPS28", "TMA7", "CARS", "CD55", "MYL6", "LINC00158", "EID1", "HSPA1A", "PIK3CD", "NHS", "THRAP3", "CCND2", "TSTD1", "RPL21P16", "DGKZ", "IL2RA", "CD200", "HIPK2", "BST2", "TSPAN13", "PITPNC1", "CAPG", "MS4A6A")
+
+Zheng4 <- c("CD7", "ENSG00000226899", "ENSG00000281383", "ENSG00000225840", "ENSG00000233139", "ENSG00000280614", "ENSG00000281181", "ENSG00000280800", "HOPX", "MAL", "ADGRG1", "SRGAP3", "CTSD", "GDPGP1", "TGFBI", "PDE7B", "IFITM2", "LINC01480", "ENSG00000277089", "TMED2", "CCND2", "LINC01871", "IL2RB", "ZNF8", "LAIR2", "CCL15", "HLA-H", "CD3E", "TOX2", "PLPP1", "CEP89", "C15orf39", "TNFRSF18", "SH2D2A", "ADAM28", "RHOC", "ASXL2", "MT-ND4L", "CTNNA1", "AZIN2", "ENSG00000262202", "GZMB", "CCL15-CCL14", "ENTPD1", "VAPA", "PRKAR1A", "ATP8B4", "CCL23", "NCALD", "ATP1B1", "CTNND1", "MAP3K8", "ANKRD54", "CBFB", "CSF1", "ZFP36L1", "TNFAIP8L1", "PDE4DIP", "ABCA2", "LILRP2", "ERP44", "LAT2", "ENSG00000256966", "NELL2", "LAYN", "NKIRAS2", "ZBTB38", "BACH2", "KRT86", "TIGIT", "ZNF268", "IKZF4", "BORCS8", "BCL2L11", "CDC14A", "PIGT", "PDCD1", "LRBA", "ZNF75A", "SYNGR2", "ZDHHC4", "ATM", "TIAM1", "SMOX", "CADM1", "HDAC7", "THOC5", "ANKRD36BP1", "CTC1", "SMG1P3", "HINFP", "SETX", "PRF1", "CLSTN3", "HUWE1", "TOX", "SQSTM1", "DCUN1D1")
+
+VdLeun <- c("ENTPD1", "ITGAE", "PDCD1", "TNFRSF9", "TNFRSF4", "CXCL13", "MKI67", "HAVCR2", "LAG3")
+
+Lowery8 <- c("ATP10D", "GZMB", "ENTPD1", "KIR2DL4", "LAYN", "HTRA1", "CD70", "CXCR6", "HMOX1", "ADGRG1", "LRRN3", "ACP5", "CTSW", "GALNT2", "LINC01480", "CARS", "LAG3", "TOX", "PTPRCAP", "ASB2", "ITGB7", "PTMS", "NKTA", "GPR68", "NSMCE1", "ABI3", "SLC1A4", "PLEKHF1", "NKTB", "LINC01871", "CCL4", "NKG7", "CLIC3", "NDFIP2", "PLPP1", "PCED1B", "CXCL13", "PDCD1", "PRF1", "HLA-DMA", "GPR25", "CD9", "TIGIT", "HLA-DRB5", "SYTL3", "SLF1", "NEK1", "CASP1", "SMC4", "TSEN54", "PLSCR1", "GNPTAB", "HLA-DPB1", "PLEKHA1", "ARHGAP9", "ALOX5AP", "SH3BP1", "NCF4", "NELL2", "GATA3", "PPM1M", "TNFRSF1A", "AC022706.1", "MCM5", "HLA-DRB1", "TNFSF10", "TRIM21", "HDLBP", "ERN1", "CALHM2", "SASH3", "ACTA2", "MAST4", "CAPG", "MPST", "IGFLR1", "GZMA", "CD27", "ITGAE", "SLA2", "RHOC", "COMMD8", "MYO1G", "SP140", "PHPT1", "CD2BP2", "PLEKHO1", "STAM", "MRPL16", "IL2RB", "ID2", "TESPA1", "GOLGA8B", "MIS18BP1", "VAMP5", "DAPK2", "HLA-DPA1", "TSG101", "IL4R", "CCND2", "CTSC", "TRAF3IP3", "NLRC3", "ORAI3", "GNLY", "MIR155HG", "CARD16", "NKT2", "ECH1", "JAML", "EEF1G", "ETFB", "DAXX", "RBM4", "HCST", "RAB27A", "YPEL2", "CHST12", "ARPC1B", "PDIA4", "PDIA6", "AC243960.1", "TBC1D10C", "PTPN6", "PYCARD", "BST2", "BTN3A2", "MTG1", "MLEC", "DUSP4", "GSDMD", "SLAMF1", "IFI6", "PCID2", "GIMAP1", "ITGA1", "CSNK2B", "CDK2AP2", "MYO1F", "AC004687.1", "PTTG1", "APOBEC3C", "TSPAN14", "MOB3A", "STXBP2", "LCP2", "PLA2G16", "LINC00649", "CST7", "TADA3", "SIT1", "APOBEC3G", "SUSD3", "CD3G", "CCL5", "CDC25B", "TNFRSF1B", "HMGN3", "THEMIS", "ASF1A", "CTNNB1", "FIBP", "CCDC85B", "POLR3GL", "GIMAP6", "ARL6IP1", "CALCOCO2", "CCPG1", "KLRB1", "ACAA2", "ISG15", "EIF4A1", "CAT", "MANF", "XAB2", "GRINA", "GLO1", "LSM2", "SLFN5", "FKBP1A", "AKNA", "TAP1", "LMO4", "APEH", "C12orf75", "TMEM14A", "DNPH1", "C17orf49", "NUDT5", "MGAT1", "CCDC69", "EIF4EBP1", "PDHB", "ARL3", "UCP2", "IFI35", "HSBP1", "LYST", "MRFAP1L1", "ITGAL", "AIP", "RASAL3", "CAPN1", "ITGB1", "RBPJ", "LBH", "DYNLL1", "NME2", "MT1F", "SYNGR2", "ABTB1", "ZGPAT", "CD63", "ILK", "SKA2", "TMEM204", "ACO2", "HOPX", "CRIP1", "OXNAD1", "CCS", "GRAP2", "GSTO1", "HADHB", "IL16", "PIN4", "CUEDC2", "CALM3", "SAMSN1", "HM13", "SNAP23", "LPCAT4", "FAAP20", "EFHD2", "PRDX3", "CCM2", "C22orf39", "SDHA", "ARRDC1", "MAP4K1", "NDUFA13", "IL27RA", "C14orf119")
+
+Lowery4 <- c("CXCL13", "HMOX1", "ETV7", "ADGRG1", "PDCD1", "ENTPD1", "CCDC50", "TOX", "CD4", "TIGIT", "TNFRSF18", "NMB", "MYL6B", "AHI1", "MAF", "IFNG", "LAG3", "CXCR6", "IGFLR1", "DUSP4", "ACP5", "LINC01943", "LIMS1", "BATF", "PCED1B", "ITGAL", "YPEL2", "MAL", "PPT1", "ELMO1", "MIS18BP1", "TMEM173", "ADI1", "SLA", "GALM", "LBH", "SECISBP2L", "CTSB", "C17orf49", "CORO1B")
+
+
+# Calculate UCell scores with all signatures
+NKT <- AddModuleScore_UCell(
+  NKT, ncores = 8,
+  features = list(CrOv.CD8_fdr5 = deGenes, CrOv.CD8_fdr1_L2FC0.5 = sig1Genes, CrOv.CD8_fdr1_posL2FC0.5 = sig2Genes,
+                  Chiffelle.CD8 = Chiffelle, Oliveira.CD8 = Oliveira, VanDerLeun.CD8 = VdLeun, 
+                  Hanada.CD8 = Hanada8, Hanada.CD4 = Hanada4, Zheng.CD8 = Zheng8, Zheng.CD4 = Zheng4,
+                  Lowery.CD8 = Lowery8, Lowery.CD4 = Lowery4))
+
+# Warning: The following genes were not found and will be imputed to exp=0:
+#* AC243829.4,TRAV21,TRBV11-2,KIAA1324,HLA-DRP1,CARS,ENSG00000226899,ENSG00000225840,ENSG00000233139,ENSG00000280614,ENSG00000281181,ENSG00000280800,ENSG00000277089,CCL15,CCL15-CCL14,ENSG00000256966,SPATA4,BPESC1,ENSG00000260342,ENSG00000273247,RPL21P16
+
+saveRDS(NKT, "CrOv.9pt_NKTsubset_UCell.TRscores_with_multiple.TRsignatures_20230830.rds")
+
+# Subset CD8.9pt from NKT with UCell TRscores with multiple signatures
+CD8.9pt <- readRDS("CrOv.9patients_CD8subset_by_Monaco.75quantile.bpEncode_20230830.rds")
+CD8.9pt$barcode <- names(CD8.9pt$orig.ident)
+CD8 <- subset(NKT, subset = barcode %in% CD8.9pt$barcode)
+length(CD8$orig.ident) # verified 7666 cells !!!
+saveRDS(CD8, "CrOv.9pt_CD8subset_UCell.TRscores_with_multiple.TRsignatures_20230830.rds")
+
+```
+# 20230830 EVENING STOPS HERE!!!
+
+
+
+# 20230831 NIGHT STARTS HERE !!!
+# CD8.9pt & NKT.9pt analysis
+```{r Apply re-normalization for all subsets before DE analysis}
+
+CD8 <- readRDS("CrOv.9pt_CD8subset_UCell.TRscores_with_multiple.TRsignatures_20230830.rds")
+NKT <- readRDS("CrOv.9pt_NKTsubset_UCell.TRscores_with_multiple.TRsignatures_20230830.rds")
+
+seurat.pipeline <- function(seu, subSet, cohort){
+  #i <- subset(seu, subset = annotated_reactivity %in% annotatedReactivity & Patient %in% patient)
+  i <- as.SingleCellExperiment(seu)
+  cl100 = scran::quickCluster(i, min.size = 100) # can change this default min.size
+  i = scran::computeSumFactors(i, cluster = cl100)
+  i = scater::logNormCounts(i,
+                            log = T,
+                            transform = "log",
+                            pseudo_count = 1)
+  i <- as.Seurat(i, counts = "counts", data = "logcounts")
+  Idents(i) <- "patient"
+  i <- ScaleData(i, 
+                 features = rownames(i),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "CCdiff",
+                                     "percent.mt", "percent.ribo"))
+  i <- FindVariableFeatures(i,
+                            selection.method = "vst",
+                            nfeatures = 2000,
+                            mean.function = ExpMean,
+                            dispersion.function = LogVMR,
+                            num.bin = 40,
+                            binning.method = "equal_width", # "equal_frequency"
+                            mean.cutoff = c(0.0125, 4),
+                            dispersion.cutoff = c(0, Inf))
+  i <- RunPCA(i, 
+              features = VariableFeatures(i),
+              npcs = 50,
+              ndims.print = 1:10,
+              nfeatures.print = 10,
+              reduction.name = 'pca')
+  
+  Idents(i) <- i$Patient
+  i$ident <- NULL
+  
+  saveRDS(i, paste0(cohort, "_", subSet,".subset_norm.scale.50pc_20230830.rds"))
+  return(i)
+}
+
+CD8 <- seurat.pipeline(CD8, "CD8", "CrOv.9pt")
+NKT <- seurat.pipeline(NKT, "NKT", "CrOv.9pt")
+
+```
+# 20230831 NIGHT STOPS HERE!!!
+
+
+# 20230831 MORNING STARTS HERE !!!
+```{r rename 3 clones & reorder cloneIDs}
+
+CD8 <- readRDS("CrOv.9pt_CD8.subset_norm.scale.50pc_20230830.rds")
+NKT <- readRDS("CrOv.9pt_NKT.subset_norm.scale.50pc_20230830.rds")
+
+unassigned <- c("CrCp4_unassignedTCR", "CrCp5_unassignedTCR", "CrCp7_unassignedTCR", "CrCm4_unassignedTCR", "CrCm6_unassignedTCR", "OvCa1637_unassignedTCR", "OvCa1682_unassignedTCR", "OvCa1809_unassignedTCR", "OvCa210_unassignedTCR")
+
+addCloneType <- function(obj) {
+  
+  # Rename 3 clones to reflect low cell TR score according to "best" CrOv signature
+  obj$cloneID <- ifelse(obj$cloneID == "CrCm6_TCR_H10", "CrCm6_TCR_L6",
+                            ifelse(obj$cloneID == "OvCa1682_TCR_H3", "OvCa1682_TCR_L6",
+                                   ifelse(obj$cloneID == "OvCa1682_TCR_H5", "OvCa1682_TCR_L7",
+                                          as.character(obj$cloneID)))
+                       )
+  
+  # Add clone types according to reactivity test types
+  obj$firstTest_clone <- obj$cloneID
+  obj$firstTest_clone <- ifelse(obj$firstTest_reactivity != "ND", as.character(obj$firstTest_clone), "others")
+  obj$benchmark_clone <- obj$cloneID
+  obj$benchmark_clone <- ifelse(obj$benchmark_reactivity != "ND", as.character(obj$benchmark_clone), "others")
+  obj$annotated_clone <- obj$cloneID
+  obj$annotated_clone <- ifelse(obj$annotated_clone %in% unassigned, "others", as.character(obj$annotated_clone))
+  
+  return(obj)
+}
+
+CD8 <- addCloneType(CD8)
+NKT <- addCloneType(NKT)
+
+# Clone order for UMAP plotting
+ordNKT <- str_sort(unique(NKT$annotated_clone), numeric = T)
+ordNKT <- ordNKT[c(98, 51:97, 1:50, 121:159, 99:120)]
+NKT$annotated_clone <- factor(NKT$annotated_clone, levels = ordNKT)
+ordNKT.ft <- str_sort(unique(NKT$firstTest_clone), numeric = T)
+ordNKT.ft <- ordNKT.ft[c(34, 12:33, 1:11, 57:82, 35:56)]
+NKT$firstTest_clone <- factor(NKT$firstTest_clone, levels = ordNKT.ft)
+ordNKT.bm <- str_sort(unique(NKT$benchmark_clone), numeric = T)
+ordNKT.bm <- ordNKT.bm[c(32, 1:31, 33:45)]
+NKT$benchmark_clone <- factor(NKT$benchmark_clone, levels = ordNKT.bm)
+
+ordCD8 <- str_sort(unique(CD8$annotated_clone), numeric = T)
+ordCD8 <- ordCD8[c(83, 45:82, 1:44, 98:135, 84:97)]
+CD8$annotated_clone <- factor(CD8$annotated_clone, levels = ordCD8)
+ordCD8.ft <- str_sort(unique(CD8$firstTest_clone), numeric = T)
+ordCD8.ft <- ordCD8.ft[c(30, 12:29, 1:11, 45:69, 31:44)]
+CD8$firstTest_clone <- factor(CD8$firstTest_clone, levels = ordCD8.ft)
+ordCD8.bm <- str_sort(unique(CD8$benchmark_clone), numeric = T)
+ordCD8.bm <- ordCD8.bm[c(27, 1:26, 28:40)]
+CD8$benchmark_clone <- factor(CD8$benchmark_clone, levels = ordCD8.bm)
+
+```
+
+
+
+# Integrate CD8 & NKT subsets
+```{r run Harmony on merged data to correct PCA, eval=FALSE}
+
+runHar <- function(seu) {
+  RunHarmony(
+    object = seu,
+    group.by.vars = "Patient", # covariates to be removed, affected by theta & lambda below
+    reduction = "pca", # be careful!!! not "PCA" !!!!!!!
+    dims.use = 1:50, # default all PCs
+    theta = 2, # default; larger for more diverse clusters, 0 for no diversity
+    lambda = 1, # default; smaller results in more aggressive correction
+    sigma = 0.1, # default; larger results in cells assigned to more cluster
+    #nclust = NULL, # 1 = simple linear regression
+    #tau = 0, # expected number of cells per cluster, protection against Crerclustering small datasets with larger ones
+    block.size = 0.01, # default; larger -> faster but less accurate
+    max.iter.harmony = 10,
+    max.iter.cluster = 20,
+    epsilon.cluster = -Inf, # set to -Inf to never stop convergence early
+    epsilon.harmony = -Inf, # set to -Inf to never stop convergence early
+    plot_convergence = TRUE,
+    verbose = TRUE,
+    reference_values = NULL,
+    reduction.save = "Harmony",
+    assay.use = "RNA",
+    project.dim = T
+    )
+}
+
+CD8 <- runHar(CD8)
+NKT <- runHar(NKT)
+
+```
+
+
+
+``` {r visualization}
+
+visualHar <- function(seu, seuName) {
+  # Visualize Harmony-corrected PCA
+  pdf(paste0(seuName, "_CrOv.9pt_correctedPCs_color.by_patient_20230830.pdf"), width = 16, height = 4)
+  print(DimPlot(seu, 
+        dims = c(1, 2),
+        group.by = c("Patient"), # current active.ident
+        reduction = "Harmony")
+  )
+  dev.off()
+
+  pdf(paste0(seuName, "_CrOv.9pt_correctedPCs_split.by_patient_20230830.pdf"), width = 26, height = 4)
+  print(DimPlot(seu, 
+        dims = c(1, 2),
+        split.by = "Patient",
+        reduction = "Harmony")
+  )
+  dev.off()
+
+  # VizDimLoading plot
+  pdf(paste0(seuName, "_CrOv.9pt_topGenes_associated_with_50Harmonys_20230830.pdf"), width = 22, height = 50)
+  print(VizDimLoadings(seu, dims = 1:50, reduction = "Harmony", ncol = 5) + # patchwork object
+    plot_annotation(title = paste(seuName, "CrOv.9pt top genes associated with 50 Harmonys"))
+  )
+  dev.off()
+
+  # Heatmap of top 20 HVGs associated with the first 50 Harmonys/PCs
+  pdf(paste0(seuName, "_CrOv.9pt_heatmap_of_top20.HVGs_50Harmonys_20230830.pdf"), width = 14, height = 30)
+  print(DimHeatmap(seu, dims = 1:50, cells = 500, nfeatures = 20, ncol = 5,
+                   reduction = 'Harmony', assays = 'RNA', slot = 'scale.data',
+                   balanced = TRUE, combine = TRUE, fast = FALSE) +
+    plot_annotation(paste0(seuName, "_CrOv.9pt - heatmap of top 20 HVGs in 50 Harmonys"))
+  )
+  dev.off()
+
+  # Find the best numbers of harmony/ PCs
+  pdf(paste0(seuName, "_CrOv.9pt_ElbowPlot_20230830.pdf"))
+  print(ElbowPlot(seu, ndims = 50, reduction = "Harmony"))
+  dev.off()
+
+}
+
+visualHar(CD8, "intgHarCD8")
+visualHar(NKT, "intgHarNKT")
+
+```
+
+
+
+```{r find optimal k and res for umap with 20pcs, eval=FALSE}
+
+clustTree <- function(seu, pc, seuName) {
+# 20 PCs identified from Elbow plot, VizDimLoading & heatmap for Harmony and 50 PCs for non-integrated data
+for (k in c(20, 25, 30)) {
+  intgH <- FindNeighbors(seu, 
+                         reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                         dims = 1:pc, # as found by Elbow plot, heatmap & VizLoading
+                         k.param = k, # default 20, can also test 30
+                         annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+  )
+  intgH <- FindClusters(intgH, resolution = seq(0.1, 1.5, 0.1))
+  # Use clustree to look at clusterings at different resolution
+  pdf(paste0(seuName, "_CrOv.9pt_clustree.", pc, "pc.k", k, "_20230830.pdf"), width = 9, height = 16)
+  print(clustree(intgH, prefix = "RNA_snn_res."))
+  dev.off()
+  rm(intgH); invisible(gc()); gc()
+}
+}
+
+clustTree(CD8, 20, "intgHarCD8")
+clustTree(NKT, 25, "intgHarNKT")
+
+```
+
+
+### 20230916 STARTS HERE!!!
+# UMAPs, clustTree, volcano plots & featurePlots of NKT subset show that cluster resolution should have been 0.5 with subclusters 0 & 5 of this resolution -> Re-cluster NKT at resolution 0.5
+```{r Re-find neighbors & clusters with selected pc, k & optimal resolution, include=FALSE}
+
+# Load NKT object from 20230901 with UCell scores of multiple signatures and subcluster6 from cluster resolution 1
+NKT <- readRDS("intgHarNKT_CrOv.9pt_subcluster6_UCell.TRscores_with_multiple.TRsignatures_20230901.rds")
+
+NeighborCluster <- function(har, harName, pc, k, res) {
+  Har <- FindNeighbors(har, 
+                       reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                       dims = 1:pc, # as found by Elbow plot
+                       k.param = k, # default 20, can also test 30
+                       annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                      )
+  Har <- FindClusters(Har, resolution = res)
+
+  ## Tabulate cells by cluster ID, replicate, or both
+  cellNumber <- c(table(Idents(Har)))
+  cell_proportion <- c(prop.table(table(Idents(Har))))
+  clustInfo <- data.frame(cellNumber, cell_proportion)
+  clustInfo <- rownames_to_column(clustInfo, var = "clusterID")
+  write.table(clustInfo, paste0(harName, "_CrOv.9pt_", pc, "pc.k", "_", res, "res_table_20230916.txt"),
+              append = F, quote = F, row.names = F, col.names = T, sep = "\t")
+
+  Har <- RunUMAP(Har,
+                 reduction = "Harmony",  
+                 dims = 1:pc,
+                 n.neighbors = k, #default 30, range 5-50, large n for preserved global structure while loss of detailed local structure, use same k as in FindNeighbors for consistent results!!! 
+                 min.dist = 0.2, #default 0.3, range 0.001-0.5, large dist for evenly distributed embedded points, small for optimizing accuracy of local structure
+                 spread = 1, 
+                 metric = "cosine", #default "cosine" to separate clusters better than "euclidean"
+                 seed.use = 1)
+
+  #saveRDS(Har, paste0(harName, "_CrOv.9pt_", pc, "pc.k", k, "_", res, "res_20230916.rds"))
+  return(Har)
+
+}
+
+#CD8 <- NeighborCluster(CD8, "intgHarCD8", 20, 30, 1.3)
+NKT <- NeighborCluster(NKT, "intgHarNKT", 25, 25, 0.5)
+
+```
+
+
+```{r UMAP of clusters, fig.width=10, fig.height=10}
+
+# DimPlot(CD8, reduction = "umap", group.by = "RNA_snn_res.1.3", label = T,
+#         cols = distinctColorPalette(length(unique(CD8$seurat_clusters))))
+
+DimPlot(NKT, reduction = "umap", group.by = "RNA_snn_res.0.5", label = T,
+        cols = distinctColorPalette(length(unique(NKT$RNA_snn_res.0.5))))
+
+```
+
+
+```{r subcluster 0 & 5 for NKT res0.5, fig.width=8, fig.height=8}
+
+# From the above umap of NKT, subcluster 6 is needed. 
+NKT <- FindSubCluster(NKT, "0", graph.name = "RNA_snn", subcluster.name = "newsubcluster0", resolution = 0.3, algorithm = 1)
+NKT <- FindSubCluster(NKT, "5", graph.name = "RNA_snn", subcluster.name = "newsubcluster5", resolution = 0.3, algorithm = 1)
+
+# Verify new subclusters on UMAP
+DimPlot(NKT, reduction = "umap", group.by = "newsubcluster0",
+             label = T, repel = T, label.size = 5,
+             cols = distinctColorPalette(length(unique(NKT$newsubcluster0)))
+)
+DimPlot(NKT, reduction = "umap", group.by = "newsubcluster5",
+             label = T, repel = T, label.size = 5,
+             cols = distinctColorPalette(length(unique(NKT$newsubcluster5)))
+)
+
+# Combine new subclusters 0 & 5 to metadata
+NKT$newSubcluster <- ifelse(NKT$RNA_snn_res.0.5 == "0" & NKT$newsubcluster0 == "0_0", "0_0",
+                            ifelse(NKT$RNA_snn_res.0.5 == "0" & NKT$newsubcluster0 == "0_1", "0_1",
+                                   ifelse(NKT$RNA_snn_res.0.5 == "5" & NKT$newsubcluster5 == "5_0", "5_0",
+                                          ifelse(NKT$RNA_snn_res.0.5 == "5" & NKT$newsubcluster5 == "5_1", "5_1",
+                                                 as.character(NKT$RNA_snn_res.0.5)))))
+NKT$newSubcluster <- factor(NKT$newSubcluster, levels = str_sort(unique(NKT$newSubcluster), numeric = T))
+Idents(NKT) <- NKT$newSubcluster
+
+pdf("intgHar.NKT_CrOv.9pt_UMAPs_with_newSubclusters_20230916.pdf", width = 8, height = 8)
+DimPlot(NKT, reduction = "umap", group.by = "newSubcluster", 
+              label = T, label.size = 5, repel = T,
+              cols = distinctColorPalette(length(unique(NKT$newSubcluster)))) +
+  ggtitle("NKT subset with new subclusters of CrOv.9patients")
+dev.off()
+
+```
+# (20230831 MORNING STOPS HERE!!!)
+
+
+# Reorder cloneIDs for mapping
+```{r revert IDs of 3 BM clones of CrCm6 & OvCa1682 then reorder cloneIDs}
+
+#CD8 <- readRDS("CrOv.9pt_CD8.subset_norm.scale.50pc_20230830.rds")
+#NKT <- readRDS("intgHarNKT_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_multipleSignatures_20230916.rds")
+
+#addCloneType <- function(obj) {
+  # Revert IDs of 3 clones to their original names
+NKT$cloneID <- ifelse(NKT$cloneID == "CrCm6_TCR_L6", "CrCm6_TCR_H10", 
+                      ifelse(NKT$cloneID == "OvCa1682_TCR_L6", "OvCa1682_TCR_H3", 
+                             ifelse(NKT$cloneID == "OvCa1682_TCR_L7", "OvCa1682_TCR_H5", 
+                                    as.character(NKT$cloneID)))
+                      )
+
+# Add clone types according to reactivity test types
+NKT$firstTest_clone <- NKT$cloneID
+NKT$firstTest_clone <- ifelse(NKT$firstTest_reactivity != "ND", as.character(NKT$firstTest_clone), "others")
+NKT$benchmark_clone <- NKT$cloneID
+NKT$benchmark_clone <- ifelse(NKT$benchmark_reactivity != "ND", as.character(NKT$benchmark_clone), "others")
+NKT$annotated_clone <- NKT$cloneID
+NKT$annotated_clone <- ifelse(NKT$annotated_clone %in% NKT$firstTest_clone, as.character(NKT$firstTest_clone),
+                              ifelse(NKT$annotated_clone %in% NKT$benchmark_clone, as.character(NKT$benchmark_clone),
+                                     ifelse(NKT$annotated_clone %in% c("CrCm4_TCR3", "CrCm4_TCR4", "CrCm4_TCR5"), as.character(NKT$annotated_clone)), # these 3 clones are neither part of the firstTest nor benchmark set!!!
+                                            "others"))
+
+# NKT$annotated_clone <- ifelse(NKT$cloneID %in% c("CrCm4_TCR3", "CrCm4_TCR4", "CrCm4_TCR5"), as.character(NKT$cloneID), as.character(NKT$annotated_clone))
+
+#  return(NKT)
+#}
+
+#CD8 <- addCloneType(CD8)
+#NKT <- addCloneType(NKT)
+
+# Clone order for UMAP plotting
+ordNKT <- str_sort(unique(NKT$annotated_clone), numeric = T)
+ordNKT <- ordNKT[c(68, 1:67, 91:129, 69:90)] #98, 51:97, 1:50, 121:159, 99:120    #65, 1:64, 88:126, 66:87
+NKT$annotated_clone <- factor(NKT$annotated_clone, levels = ordNKT)
+
+ordNKT.ft <- str_sort(unique(NKT$firstTest_clone), numeric = T)
+ordNKT.ft <- ordNKT.ft[c(34, 1:33, 57:82, 35:56)] #34, 12:33, 1:11, 57:82, 35:56
+NKT$firstTest_clone <- factor(NKT$firstTest_clone, levels = ordNKT.ft)
+
+ordNKT.bm <- str_sort(unique(NKT$benchmark_clone), numeric = T)
+ordNKT.bm <- ordNKT.bm[c(32, 1:31, 33:45)]
+NKT$benchmark_clone <- factor(NKT$benchmark_clone, levels = ordNKT.bm)
+
+# Add new Subclusters & cloneID order from this intgHarNKT subset to intgHarCD8 to have consistent cloneID order and cluster labels
+CD8 <- readRDS("intgHarCD8_CrOv.9pt_20pc.k30_0.8res_20230830.rds")
+cd8 <- FetchData(CD8, vars = c("barcode"))
+nkt <- FetchData(NKT, vars = c("barcode", "newSubcluster", "cloneID", "firstTest_clone", "benchmark_clone", "annotated_clone"))
+cd8 <- cd8 %>% left_join(nkt)
+
+# Relevel CD8 clones
+ordcd8 <- str_sort(unique(cd8$annotated_clone), numeric = T)
+ordcd8 <- ordcd8[c(59, 1:58, 74:111, 60:73)] # 110 annotated clones   #83, 45:82, 1:44, 98:135, 84:97
+cd8$annotated_clone <- factor(cd8$annotated_clone, levels = ordcd8)
+ordcd8.ft <- str_sort(unique(cd8$firstTest_clone), numeric = T)
+ordcd8.ft <- ordcd8.ft[c(30, 1:29, 45:69, 31:44)]  # 68 firstTest clones   #30, 12:29, 1:11, 45:69, 31:44
+cd8$firstTest_clone <- factor(cd8$firstTest_clone, levels = ordcd8.ft)
+ordcd8.bm <- str_sort(unique(cd8$benchmark_clone), numeric = T)
+ordcd8.bm <- ordcd8.bm[c(27, 1:26, 28:40)] # 39 benchmark clones
+cd8$benchmark_clone <- factor(cd8$benchmark_clone, levels = ordcd8.bm)
+
+cd8 <- cd8 %>% column_to_rownames(var = "barcode")
+
+# Add metadata to intgHarCD8 
+CD8 <- AddMetaData(CD8, metadata = cd8) # 7666 cells
+
+saveRDS(NKT, "intgHarNKT_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_multipleSignatures_20230916.rds")
+saveRDS(CD8, "intgHarCD8_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_multipleSignatures_20230916.rds")
+
+```
+
+
+# (20230831 AFTERNOON STARTS HERE !!!)
+```{r plot umaps with clones, fig.width=20, fig.height=18}
+
+UMAPs.with.clones <- function(Har, harName, w, h) {
+  # colored by subclusters
+  p0 <- DimPlot(Har, reduction = "umap", group.by = "newSubcluster",
+                cols = distinctColorPalette(length(unique(Har$newSubcluster))),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1)
+  #p0
+  
+  # colored by TR
+  p1 <- DimPlot(Har, reduction = "umap", group.by = "firstTest_reactivity",
+                cols = c("grey90", "royalblue", "red1"),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1,
+                order =  c("reactive", "nonreactive", "ND")
+  )
+  p1
+  p2 <- DimPlot(Har, reduction = "umap", group.by = "benchmark_reactivity",
+                cols = c("grey90", "royalblue", "red1"),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1,
+                order =  c("reactive", "nonreactive", "ND")
+  )
+  p2
+  p3 <- DimPlot(Har, reduction = "umap", group.by = "annotated_reactivity",
+                cols = c("grey90", "royalblue", "red1"),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1,
+                order = c("reactive", "nonreactive", "ND")
+  )
+  p3
+  
+  # colored by cloneID
+  p4 <- DimPlot(Har, reduction = "umap", group.by = "firstTest_clone",
+                cols = c("grey90", distinctColorPalette(length(unique(Har$firstTest_clone))-1)),
+                split.by = "Patient",
+                shape.by = "firstTest_reactivity",
+                ncol = 3, pt.size = 1.5,
+                order = rev(levels(Har$firstTest_clone))
+  ) +
+    scale_shape_manual(values = c(19, 4, 1)) +
+    guides(color = guide_legend(override.aes = list(size=4), ncol = 2),
+           shape = guide_legend(override.aes = list(size=4))) #list(), 
+  p4
+  p5 <- DimPlot(Har, reduction = "umap", group.by = "benchmark_clone",
+                cols = c("grey90", distinctColorPalette(length(unique(Har$benchmark_clone))-1)),
+                split.by = "Patient",
+                shape.by = "benchmark_reactivity",
+                ncol = 3, pt.size = 1.5,
+                order = rev(levels(Har$benchmark_clone))
+  ) +
+    scale_shape_manual(values = c(19, 4, 1)) +
+    #theme(legend.key.size = unit(1, "cm")) +
+    guides(color = guide_legend(override.aes = list(size=4), ncol = 1),
+           shape = guide_legend(override.aes = list(size=4))) #to increase shape size in legend
+  p5
+  p6 <- DimPlot(Har, reduction = "umap", group.by = "annotated_clone",
+                cols = c("grey90", distinctColorPalette(length(unique(Har$annotated_clone))-1)),
+                split.by = "Patient",
+                shape.by = "annotated_reactivity",
+                ncol = 3, pt.size = 1.5,
+                order = rev(levels(Har$annotated_clone))
+  ) +
+    scale_shape_manual(values = c(19, 4, 1)) +
+    guides(color = guide_legend(override.aes = list(size=4), ncol = 2),
+           shape = guide_legend(override.aes = list(size=4))) 
+  p6
+  
+  pdf(paste0(harName, "_CrOv.9pt_various.umaps_with_tumor.reactivity.TCRs_per.patient_20230916.pdf"), width = w, height = h)
+  print(p0); print(p1); print(p2); print(p3); print(p4); print(p5); print(p6)
+  dev.off()
+  
+}
+
+UMAPs.with.clones(NKT, "intgHarNKT", 20, 18)
+UMAPs.with.clones(CD8, "intgHarCD8", 15, 14)
+
+rm(cd8, nkt, ordcd8, ordcd8.bm, ordcd8.ft, ordNKT, ordCD8, ordCD8.ft, ordCD8.bm)
+```
+
+
+# (20230901 STARTS HERE!!!)
+```{r load 3 TR signatures of 8 patients}
+# 
+# DE <- read.table("CrOv.8pt_CD8reac.firstTest_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr5.DEgenes_0.1cells_20230830.txt",
+#                  sep = "\t", header = T) # 93 genes, 53 UP & 40 DN; all DE genes at fdr0.05
+# sig1 <- read.table("CrOv.8pt_CD8reac.firstTest_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.l2FC0.5.DEgenes_0.1cells_20230830.txt", sep = "\t", header = T) # 48 genes, 27 UP & 21 DN, genes with fdr0.01 & |log2FC| >=0.5
+# sig2 <- read.table("CrOv.8pt_CD8reac.firstTest_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.posl2FC0.5.DEgenes_0.1cells_20230830.txt", sep = "\t", header = T) # 27 UP, genes with fdr0.01 & log2FC >=0.5
+
+```
+
+
+# DE analysis for all clusters
+```{r Find cluster-specific markers for NKT & CD8, eval=FALSE}
+
+Idents(NKT) <- "newSubcluster"
+#Idents(CD8) <- "seurat_clusters"
+# For each cluster, find genes DE compared to all other clusters
+allMarkers <- function(har, seuName){
+  Markers <- FindAllMarkers(har, 
+                            only.pos = F, 
+                            min.pct = 0.1, 
+                            logfc.threshold = 0.25,   # 0.58496 = 1.5x, default=0.25
+                            min.cells.feature = 3,
+                            min.cells.group = 3,
+                            pseudocount.use = 0.1, # default=1
+                            return.thresh = 1, # p-value
+                            assay = 'RNA',
+                            slot = 'data',
+                            test.use = "LR" # best scDE method according to Libra package is LR
+                            )
+  sigMarkers <- Markers %>% filter(p_val_adj <= 0.05) %>% arrange(cluster, desc(avg_log2FC))
+  write.table(sigMarkers, 
+              paste0("intgHar", seuName, "_CrOv.9pt_newSubclusters_DEmarkers_", "LR.test", "_lfc0.25_fdr5_20220916.txt"), 
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+  
+  l <- list(sigMarkers, Markers)
+  names(l) <- c("FDR0.05", "allFDR")
+  return(l)
+}
+
+#CD8.DE <- allMarkers(CD8, "CD8")
+NKT.DE <- allMarkers(NKT, "NKT")
+
+```
+
+
+
+# NOT RUN!!!!! Table of cluster-specific markers identified with |avg_log2FC| > 0.25, minimum 10% of cells in any cluster expressing the marker, fdr = 0.05
+```{r table all NKT2 cluster-specific markers, include=TRUE, results='markup'} 
+# 
+# CD8.DE <- Markers %>% filter(p_val_adj <= 0.05) %>% arrange(cluster, desc(avg_log2FC))
+# intgHar.DE <- intgHar.DE %>% filter(p_val_adj <= 0.05) %>% arrange(cluster, desc(avg_log2FC))
+# 
+# kbl(CD8.DE, caption = "CD8.subset cluster-specific markers") %>% 
+#   kable_styling(bootstrap_options = c("hover", "condensed", "responsive"), 
+#                 full_width = F, position = "left", fixed_thead = T, font_size = 12) %>% 
+#   scroll_box(width = "100%", height = "200px")
+# 
+# kbl(intgHar.DE, caption = "CD8.subset cluster-specific markers") %>% 
+#   kable_styling(bootstrap_options = c("hover", "condensed", "responsive"), 
+#                 full_width = F, position = "left", fixed_thead = T, font_size = 12) %>% 
+#   scroll_box(width = "100%", height = "200px")
+
+```
+
+
+# -----------------------------------------------------
+# Volcano plots for NKT cluster-specific markers
+```{r volcano plot for NKT subset, include=TRUE, fig.width=14, fig.height=10}
+
+plotVolcano <- function(DE, harName, clusterName) {
+  pdf(paste0("intgHar", harName, "_CrOv.9pt_newSubClusters_volcano.plots_of_DE.genes_lfc0.25_fdr5_LR.test_20230916.pdf"), width = 14, height = 10)
+  for (k in c(levels(clusterName))) {
+    res <- filter(DE, cluster == k)
+    #plot.new() # to have one plot per tab in html output - NOT working!
+    print(EnhancedVolcano(res,
+                          lab = res$gene,
+                          x = "avg_log2FC",
+                          y = "p_val_adj",
+                          title = paste(harName, "CrOv.9pt : markers of cluster ", k),
+                          subtitle = "",
+                          pCutoff = 0.01,
+                          FCcutoff = 1,
+                          pointSize = 1,
+                          labSize = 3.5,
+                          drawConnectors = TRUE,
+                          widthConnectors = 0.1,
+                          #typeConnectors = "open",
+                          arrowheads = FALSE,
+                          maxoverlapsConnectors = 30,
+                          legendLabels = c("NS", 
+                                           "0.25 < log2FC < 1", 
+                                           "0.01 < adj-pvalue < 0.05", 
+                                           "adj-pvalue < 0.01 & log2FC > 1"),
+                          col = c("grey30", "forestgreen", "royalblue", "red2"),
+                          )
+          )
+  }
+  dev.off()
+}
+
+#plotVolcano(CD8.DE$FDR0.05, "CD8", CD8$seurat_clusters)
+#plotVolcano(NKT.DE$FDR0.05, "NKT", NKT$newSubcluster)
+
+# plotVolcano(CD8.DE$allFDR, "CD8", CD8$seurat_clusters)
+plotVolcano(NKT.DE$allFDR, "NKT", NKT$newSubcluster)
+
+```
+
+
+
+# -----------------------------------------------------------------------------------
+### *** Feature plots for cell lineage markers & top20 upregulated markers (by average log2FC) of each cluster
+```{r feature plot, top20 cluster markers for NKT, include=TRUE, fig.width=16, fig.height=20}
+
+#Idents(CD8) <- "seurat_clusters"
+Idents(NKT) <- "newSubcluster"
+lineage <- c("CD3E", "CD8A", "CD4", "KLRD1", "TRGV9", "C1QA", "CD1C", "CD79A")
+
+plotFeature <- function(har, DE, harName, clusterName) {
+  
+  # 1. lineage markers
+  pdf(paste0("intgHar", harName, "_CrOv.9pt_newSubclusters_feature.plots_of_lineage.markers_20230916.pdf"), width = 16, height = 8)
+  print(FeaturePlot(har,
+              features = lineage,
+              reduction = "umap", slot = "data",
+              cols = rev(brewer.pal(11, "Spectral")),
+              label = TRUE, repel = TRUE, label.size = 4, label.color = "magenta",
+              pt.size = 0.1, order = TRUE, by.col = TRUE, combine = T, ncol = 4
+              ) +
+    plot_annotation(title = paste(harName, "CrOv.9pt lineage markers"),
+                    theme = theme(plot.title = element_text(size = 24))
+                    )
+      )
+  dev.off()
+
+  # 2. top20 markers by log2FC
+  pdf(paste0("intgHar", harName, "_CrOv.9pt_newSubclusters_feature.plots_of_top20.DEgenes_by.log2FC_20230916.pdf"), width = 16, height = 20)
+  for (k in c(levels(clusterName))) {
+    top20 <- DE %>% filter(cluster == k) %>% top_n(20, wt = avg_log2FC)
+    #plot.new()
+    print(FeaturePlot(har,
+                      features = top20$gene,
+                      reduction = "umap", slot = "data",
+                      cols = rev(brewer.pal(11, "Spectral")),
+                      label = TRUE, repel = TRUE, label.size = 4, label.color = "magenta",
+                      pt.size = 0.1, order = TRUE, by.col = TRUE, combine = T, ncol = 4
+                      ) +
+      plot_annotation(title = paste(harName, "CrOv.9pt top20 markers by avg_log2FC of cluster", k),
+                      theme = theme(plot.title = element_text(size = 20))
+                    )
+      )
+  }
+  dev.off()
+
+  # # 3. top20 markers by FDR
+  # pdf(paste0(harName, "_CrOv.9pt_feature.plots_of_top20.DEgenes_by.FDR_20230830.pdf"), width = 16, height = 20)
+  # for (k in c(levels(clusterName))) {
+  #   top20p <- DE %>% filter(cluster == k) %>% arrange(p_val_adj) %>% top_n(20, wt = p_val_adj)
+  #   #plot.new()
+  #   print(FeaturePlot(har,
+  #                     features = top20p$gene,
+  #                     reduction = "umap", slot = "data",
+  #                     cols = rev(brewer.pal(11, "Spectral")),
+  #                     label = TRUE, repel = TRUE, label.size = 5, label.color = "magenta",
+  #                     pt.size = 0.1, order = TRUE, by.col = TRUE, combine = T, ncol = 4
+  #                     ) +
+  #     plot_annotation(title = paste(harName, "CrOv.p9t top20 markers by FDR of cluster", k),
+  #                     theme = theme(plot.title = element_text(size = 20))
+  #                   )
+  #     )
+  # }
+  # dev.off()
+
+}
+
+#plotFeature(CD8, CD8.DE$FDR0.05, "CD8", CD8$seurat_clusters)
+plotFeature(NKT, NKT.DE$FDR0.05, "NKT", NKT$newSubcluster)
+
+# plotFeature(CD8, CD8.DE, "CD8", CD8$seurat_clusters)
+# plotFeature(NKT, NKT.DE, "NKT", NKT$subcluster)
+
+```
+
+
+# Based on the above various UMAPs, volcanoPlots & featurePlots, relabel the subclusters
+```{r relabel NKT clusters}
+
+# From DE, volcano plots & featurePlot, relabel NKT clusters as follow
+NKT <- RenameIdents(NKT, '0_0' = 'CD8_eff', '0_1' = 'CD8_em', '1' = 'Treg', '2' = 'CD4_naive', '3' = 'CD4_activated', '4' = 'CD4_cm', '5_0' = 'CD8_exh', '5_1' = 'Tfh', '6' = 'T_cycling', '7' = 'CD8_NKlike', '8' = 'CD4')
+unique(Idents(NKT))
+
+pdf("intgHar_CrOv.9pt_newSubclusters_clusterLabels_20230916.pdf", width = 7, height = 6)
+DimPlot(NKT, reduction = "umap", #group.by = "newSubcluster",
+              cols = distinctColorPalette(length(unique(Idents(NKT)))),
+        label = T, repel = T
+        )
+dev.off()
+
+```
+
+
+
+### 20230917 STARTS HERE!!!
+### Need to derive new TR signature for CD8 of CrOv.9pt with all 110 annotated clones
+```{r subset CD8 to only annotated clones}
+CD8tr <- subset(CD8, subset = annotated_clone != "others")
+```
+
+
+# CD8tr cell count & clone count per patient of all 9 patients
+## per Patient: plot reactivity - cell counts or clone counts
+```{r prepare to plot reactivity cell/clone counts per patient or reactivity cell counts per cloneID}
+
+getReactCount <- function(seu) {
+  df <- FetchData(seu, vars = c("Patient", "annotated_reactivity", "annotated_clone"))
+  
+  # cell count per patient
+  cellCount <- df %>%
+    group_by(Patient, annotated_reactivity, .drop = T) %>%
+    summarise(cellCount = n())
+  
+  # clone count per patient
+  cloneCount <- df %>%
+    group_by(Patient, annotated_reactivity, annotated_clone, .drop = T) %>%
+    summarise(cellCount = n()) %>%
+    group_by(Patient, annotated_reactivity, .drop = T) %>%
+    summarise(cloneCount = n())
+
+  reactCount <- cellCount %>% 
+    left_join(cloneCount, by = c("Patient", "annotated_reactivity"))
+  reactCount$annotated_reactivity <- factor(reactCount$annotated_reactivity, levels = c("reactive", "nonreactive"))
+  reacCount <- reactCount %>% filter(!is.na(annotated_reactivity))
+  
+  rm(cellCount, cloneCount)
+  return(reactCount)
+}
+
+reactCount.perPT_CD8 <- getReactCount(CD8tr)
+
+```
+
+
+# per cloneID per patient: cell counts for reactivivity
+```{r function for cell count per cloneID per PT}
+
+getCellCount <- function(seu) {
+  df <- FetchData(seu, vars = c("Patient", "annotated_clone", "annotated_reactivity"))
+  
+  # cell count per annotated_clone per patient
+  cellCount <- df %>%
+    group_by(annotated_clone, Patient, annotated_reactivity, .drop = T) %>%
+    summarise(cellCount = n())
+  
+  cellCount$annotated_clone <- factor(cellCount$annotated_clone, 
+                              levels = str_sort(unique(cellCount$annotated_clone), numeric = T))
+  cellCount$annotated_reactivity <- factor(cellCount$annotated_reactivity, levels = c("reactive", "nonreactive"))
+  
+  return(cellCount)
+}
+
+cellCount_CD8 <- getCellCount(CD8tr)
+
+```
+
+
+# Plot cell/clone counts per PT
+```{r plot cell/clone counts per patient for reactivity}
+
+reactivityCountPlot <- function(df, count, fillName, cohort, subSet, aspectRatio) {
+  p <- ggplot(df, aes(x = Patient, y = count, fill = annotated_reactivity)) +
+    geom_bar(stat = "identity", width = 0.9
+    ) +
+    #scale_fill_brewer() +
+    #scale_fill_manual(values = sample_colors) + #c("#BA93FB", "#FDA813", "#12D8B7","#FFF910", "lightblue") 
+    #facet_grid(~ CellLabel, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.03,0)) +
+    ggtitle(paste(cohort, subSet, "subset"),
+            subtitle = paste("annotated Tumor Reactivity - ", fillName, "per patient")
+            ) +
+    ylab(fillName) +
+    xlab("") +
+    theme_classic() +
+    theme(aspect.ratio = aspectRatio, # axis size y/x 
+          axis.text.x = element_text(angle = -30, hjust = 0.2, vjust = 0.2),
+          axis.ticks.x = element_blank(),
+          legend.title = element_blank()
+    ) +
+    geom_text(aes(label = count), size = 2.5, 
+              position = position_stack(vjust = 0.5)) #to display text in the middle of the bar
+  
+    pdf(paste0(cohort, "_", subSet, "subset_annotated.Tumor.Reactivity_", fillName, "_per_patient_20230917.pdf"), width = 6, height = 4)
+  print(p)
+  dev.off()
+}
+
+reactivityCountPlot(reactCount.perPT_CD8, reactCount.perPT_CD8$cellCount, "cell.counts", "CrOv.9patients", "CD8", 1/1.5)
+reactivityCountPlot(reactCount.perPT_CD8, reactCount.perPT_CD8$cloneCount, "clone.counts", "CrOv.9patients", "CD8", 1/1.5)
+
+```
+
+
+# Plot cell counts per cloneID per PT
+```{r plot cell/clone counts per patient for reactivity}
+
+cellCountPlot <- function(df, count, fillName, cohort, subSet) {
+  p <- ggplot(df, aes(x = clone, y = count, fill = reactivity)) +
+    geom_bar(stat = "identity", width = 0.9
+    ) +
+    #scale_fill_brewer() +
+    scale_fill_manual(values = c("lightblue", "brown1")) + #c("#BA93FB", "#FDA813", "#12D8B7","#FFF910", "lightblue") 
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.03,0)) +
+    ggtitle(paste(cohort, subSet, "subset - annotated Tumor Reactivity"),
+            subtitle = paste(fillName, "per annotated TCR")
+            ) +
+    ylab(fillName) +
+    xlab("") +
+    theme_classic() +
+    theme(#aspect.ratio = aspectRatio, # axis size y/x 
+          #axis.text.x = element_text(angle = -30, hjust = 0.2, vjust = 0.2),
+          #axis.ticks.x = element_blank(),
+          legend.title = element_blank()
+    ) +
+    geom_text(aes(label = count), size = 2.5, 
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    coord_flip()
+  
+    pdf(paste0(cohort, "_", subSet, "subset_annotated.Tumor.Reactivity_", fillName, "_per_testedTCR_20230917.pdf"), width = 10, height = 18)
+  print(p)
+  dev.off()
+}
+
+#cellCountPlot(cellCount_CD8, cellCount_CD8$cellCount, "cell.counts", "CrOv.9patients", "CD8")
+
+cellCount_CD8_ord <- cellCount_CD8 %>% arrange(cellCount) %>% 
+  mutate(clone = as.character(annotated_clone)) %>% 
+  mutate(reactivity = as.character(annotated_reactivity)) %>% ungroup() %>% 
+  select(clone, reactivity, cellCount)
+cellCount_CD8_ord$clone <- factor(cellCount_CD8_ord$clone, levels = rev(unique(cellCount_CD8_ord$clone)))
+
+cellCountPlot(cellCount_CD8_ord, cellCount_CD8_ord$cellCount, "cell.counts", "CrOv.9patients.ordered", "CD8")
+
+rm(cd8, nkt, cellCount_CD8, cellCount_CD8_ord, ordcd8, ordCD8, ordcd8.bm, ordcd8.ft, ordCD8.bm, ordCD8.ft, reactCount.perPT_CD8)
+
+```
+
+
+# CD8tr analysis for CrOv.9pt
+```{r Apply re-normalization before DE analysis}
+
+seurat.pipeline <- function(seu, subSet, cohort){
+  #i <- subset(seu, subset = firstTest_reactivity %in% annotatedReactivity & Patient %in% patient)
+  i <- as.SingleCellExperiment(seu)
+  cl100 = scran::quickCluster(i, min.size = 100) # can change this default min.size
+  i = scran::computeSumFactors(i, cluster = cl100)
+  i = scater::logNormCounts(i,
+                            log = T,
+                            transform = "log",
+                            pseudo_count = 1)
+  i <- as.Seurat(i, counts = "counts", data = "logcounts")
+  Idents(i) <- "patient"
+  i <- ScaleData(i, 
+                 features = rownames(i),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "CCdiff",
+                                     "percent.mt", "percent.ribo"))
+  i <- FindVariableFeatures(i,
+                            selection.method = "vst",
+                            nfeatures = 2000,
+                            mean.function = ExpMean,
+                            dispersion.function = LogVMR,
+                            num.bin = 40,
+                            binning.method = "equal_width", # "equal_frequency"
+                            mean.cutoff = c(0.0125, 4),
+                            dispersion.cutoff = c(0, Inf))
+  i <- RunPCA(i, 
+              features = VariableFeatures(i),
+              npcs = 50,
+              ndims.print = 1:10,
+              nfeatures.print = 10,
+              reduction.name = 'pca')
+  
+  Idents(i) <- i$Patient
+  i$ident <- NULL
+  
+  saveRDS(i, paste0(cohort, "_", subSet,".subset_for_CrOv.9pt.TRsignature_norm.scale.50pc_20230917.rds"))
+  return(i)
+}
+
+CD8tr <- seurat.pipeline(CD8tr, "CD8.allAnnotatedTCRs", "CrOv.9patients") # This is the CD8 subset of 923 cells to calculate CrOv.9pt TR signatures
+
+```
+
+
+# DE for reactive vs. nonreactive of all 110 annotated clones
+```{r DE}
+
+# function for DE, table and volcano
+DE <- function(seu, DEclass, id1, id2, pct, test, cohort) {
+  Idents(seu) <- seu[[DEclass]] # switch identity to class used for DE
+  Idents(seu) <- as.character(Idents(seu)) # VERY IMPORTANT!!!
+  # do DE
+  Marker <- FindMarkers(seu,
+                        ident.1 = id1, ident.2 = id2,
+                        only.pos = F,
+                        min.pct = pct,
+                        logfc.threshold = 0,   # 0.58496 = 1.5x; default 0.25
+                        min.cells.feature = 3,
+                        min.cells.group = 3,
+                        pseudocount.use = 0.1, # default 1
+                        #return.thresh = 0.01, only works with FindAllMarkers
+                        assay = 'RNA',
+                        slot = 'data',
+                        #latent.vars = "SampleID", #uncomment this if use test LR!!!!!!
+                        test.use = test
+  )
+  
+  Marker <- Marker %>%
+    rownames_to_column(var = "gene") %>%
+    data.table::setnames(c("avg_log2FC", "p_val_adj"), c("log2FC", "padj"))
+  
+  # save significant DE list
+  write.table(Marker,
+              paste0(cohort, "_CD8.allAnnotatedTCRs_tumor.reactivity_", id1, "_vs_", id2, "_", test, ".test_all.DEgenes_", pct, "cells_20230917.txt"),
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+  sigMarker <- Marker %>% filter(padj <= 0.05) %>% arrange(desc(log2FC))
+  write.table(sigMarker,
+              paste0(cohort, "_CD8.allAnnotatedTCRs_tumor.reactivity_", id1, "_vs_", id2, "_", test, ".test_fdr5.DEgenes_", pct, "cells_20230917.txt"),
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+
+  return(Marker)
+}
+
+DE <- DE(CD8, "annotated_reactivity", "reactive", "nonreactive", 0.1, "LR", "CrOv.9pt")
+sig1 <- DE %>% filter(padj <= 0.01 & abs(log2FC) >= 0.5) %>% arrange(-log2FC) # This is the new CrOv.9pt signature
+sig2 <- sig1 %>% filter(log2FC > 0.5) # This is the new CrOv.9pt_UP signature
+
+write.table(sig1, "CrOv.9pt_CD8.allAnnotatedTCRs_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.l2FC0.5.DEgenes_0.1cells_20230917.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(sig2, "CrOv.9pt_CD8.allAnnotatedTCRs_tumor.reactivity_reactive_vs_nonreactive_LR.test_fdr1.posl2FC0.5.DEgenes_0.1cells_20230917.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+# Verify patient-specific expression of genes in TR signatures derived from all 110 annotated clones of all 9 patients
+```{r stacked violin plots for DE genes of TR signature, include=FALSE}
+
+violinPlot <- function(markerClass, markerList, colorClass, w){
+  
+  pdf(paste0("intgHarCD8_CrOv.9pt_stacked.violin.plots_of_genes_in_CrOv.9pt.TRsignatures_per.", colorClass, "_for_", markerClass, "_20230917.pdf"), width = w, height = length(markerList)/2)
+  p <- VlnPlot(CD8tr, features = markerList, 
+               group.by = colorClass, split.by = "annotated_reactivity",
+               assay = "RNA", slot = "data", adjust = 0.6,
+               #cols = sample_colors,
+               pt.size = 0, combine = T, sort = FALSE, flip = TRUE, stack = TRUE
+                ) +
+    plot_annotation(paste("Tumor reactive signature -", markerClass),
+                    theme = theme(plot.title = element_text(size = 12, face = "bold"))) +
+    guides(color = guide_legend(override.aes = list(size=4), ncol = 1))
+  print(p)
+  dev.off()
+}
+
+violinPlot("lfc0.5_FDR1_genes", sig1$gene, "Patient", 9)
+violinPlot("lfc0.5_FDR1_genes", sig1$gene, "annotated_reactivity", 5)
+
+```
+
+
+# Calculate TR scores for NKT subset using these 2 CrOv.9pt signatures and 7 external CD8 TR signatures
+```{r add tumor reactive UCell scores to NKT}
+
+# 1. 3 CrOv signatures
+# 1a) full DE fdr0.5
+# deUP <- DE %>% filter(padj <= 0.05 & log2FC > 0)
+# deDN <- DE %>% filter(padj <= 0.05 & log2FC < 0)
+# deUP$gene <- paste0(deUP$gene, "+")
+# deDN$gene <- paste0(deDN$gene, '-')
+# deGenes <- c(deUP$gene, deDN$gene)
+
+# 1a) sig1 fdr0.1 l2FC0.5
+sig1UP <- sig1 %>% filter(log2FC > 0.5)
+sig1DN <- sig1 %>% filter(log2FC < 0.5)
+sig1UP$gene <- paste0(sig1UP$gene, "+")
+sig1DN$gene <- paste0(sig1DN$gene, '-')
+sig1Genes <- c(sig1UP$gene, sig1DN$gene)
+
+# 1b) sig1 fdr0.1 posl2FC0.5
+sig2Genes <- sig1UP$gene
+
+
+# 2. External signatures:
+# Chiffelle <- c("CXCL13", "GAPDH", "TNFRSF9", "KLRC2", "RPL12", "PDCD1", "ATP5MC2", "TOX", "MIF", "SAMSN1", "ITM2A", "PARK7", "RBPJ", "LAG3", "CTLA4", "S100A4", "IL6ST", "PTPN6", "CSNK2B", "LYST") # already done previously!
+
+LiDYS <- c("LAG3", "HAVCR2", "PDCD1", "PTMS", "FAM3C", "IFNG", "AKAP5", "CD7", "PHLDA1", "ENTPD1", "SNAP47", "TNS3", "CXCL13", "RDH10", "DGKH", "KIR2DL4", "LYST", "MIR155HG", "RAB27A", "CSF1", "CTLA4", "TNFRSF9", "CD27", "CCL3", "ITGAE", "PAG1", "TNFRSF1B", "GALNT1", "GBP2", "MYO7A") # to be added to the CD8 subset
+# 
+# OliveiraUP <- c("KRT86", "RDH10", "TYMS", "HMOX1", "GNG4", "CXCL13", "AFAP1L2", "ACP5", "MYO1E", "LAYN", "TNS3", "TNFSF4", "AKAP5", "HAVCR2", "ENTPD1", "SLC2A8", "AC243829.4", "ZBED2", "MCM5", "CAV1", "GOLIM4", "TRAV21", "VCAM1", "PON2", "MTSS1", "CD38", "TRBV11-2", "MS4A6A", "TOX2", "CSF1", "GALNT2", "FXYD2", "PLPP1", "LMCD1", "MYL6B", "LAG3", "HLA-DRA", "IGFLR1", "CCDC50", "CD27", "KIAA1324", "CDKN2A", "CD70", "ABHD6", "CTLA4", "PDCD1", "GEM", "NUSAP1", "TOX", "CXCR6", "NMB", "HOPX", "CLIC3", "INPP5F", "SNAP47", "TSHZ2", "HLA-DMA", "SIT1", "HLA-DRB1", "TUBB", "PYCARD", "ADGRG1", "HLA-DQA1", "PRF1", "HLA-DPA1", "PTMS", "CKS1B", "HIPK2", "CHST12", "LSP1", "FAM3C", "SLC1A4", "NUDT1", "DNPH1")
+# OliveiraDN <- c("RARA", "GADD45B", "C1orf21", "AOAH", "MATK", "SATB1", "MBP", "ANTXR2", "RORA", "CCR7", "ANXA1", "BACH2", "GLUL", "TNFSF14", "AUTS2", "PERP", "EPHA4", "TCF7", "SELL", "MYC", "IL7R", "CD300A", "ITGA5", "GPR183", "KLF3", "S1PR1", "FOSB")
+# OliveiraUP <- paste0(OliveiraUP, "+")
+# OliveiraDN <- paste0(OliveiraDN, '-')
+# Oliveira <- c(OliveiraUP, OliveiraDN) # already done previously!
+# 
+# Hanada8UP <- c("BATF", "CXCL13", "LAYN", "ENTPD1", "TIGIT", "PHLDA1", "GZMB", "CD27", "CD74", "HLA-DMA", "HLA-DRA", "HLA-DRB1", "HLA-DRP1", "NKT2", "CD3D", "ARL3", "CCND2", "TPI1", "GAPDH", "ALOX5AP", "LSP1", "ITM2A", "CARS", "DUSP4", "HMOX1", "HMGN3", "CHST12", "NAP1L4")
+# Hanada8DN <- c("IL7R")
+# Hanada8UP <- paste0(Hanada8UP, "+")
+# Hanada8DN <- paste0(Hanada8DN, '-')
+# Hanada8 <- c(Hanada8UP, Hanada8DN) # already done previously!
+# 
+# Zheng8 <- c("CXCL13", "RBPJ", "NR6A1", "SPATA4", "KRT86", "TC2N", "RGS1", "CSGALNACT1", "STOM", "GZMK", "MT-CO2", "MT-ND3", "LRRN3", "ETV1", "CD3D", "MT-ND1", "GTF2IP13", "TBC1D4", "MT-ND4L", "XIST", "IQGAP1", "ITM2C", "PHLDA1", "CARD16", "MT-CO3", "UBL5", "AOAH", "HSPA7", "TOX", "MIR155HG", "HSPA6", "LYST", "AUTS2", "MT-ND4", "SERF2", "MT-ATP6", "RPS4Y1", "NELL2", "ENSG00000196656", "RPL10P9", "BPESC1", "LAYN", "CHN1", "SRI", "POLR2G", "MTND2P28", "MTATP6P1", "MT-ND2", "CCL3L1", "NR3C1", "SLAMF7", "SEC61G", "MT-RNR2", "MT-ND5", "GOLIM4", "HECTD2", "PCED1B-AS1", "LINC00299", "CTLA4", "ENSG00000260342", "MT-ATP8", "HAVCR2", "ID2", "TMSB10", "GPM6A", "IL7R", "CCL4L2", "CRIP1", "TXLNGY", "IL6ST", "MT-CYB", "SIRPG", "COMMD6", "TNFRSF18", "DDX3Y", "MRPL33", "RNF19A", "SLC4A7", "RUNX2", "SLA", "MYC", "GCHFR", "LINC-PINT", "ENSG00000273247", "RPL21", "DHRS3", "TIGIT", "SYNGR1", "SYNGR2", "MYADM", "NDUFA3", "LINC02446", "FAM157A", "BTLA", "NAP1L4", "KDM5D", "RPL41", "RPS28", "TMA7", "CARS", "CD55", "MYL6", "LINC00158", "EID1", "HSPA1A", "PIK3CD", "NHS", "THRAP3", "CCND2", "TSTD1", "RPL21P16", "DGKZ", "IL2RA", "CD200", "HIPK2", "BST2", "TSPAN13", "PITPNC1", "CAPG", "MS4A6A") # already done previously!
+# 
+# VdLeun <- c("ENTPD1", "ITGAE", "PDCD1", "TNFRSF9", "TNFRSF4", "CXCL13", "MKI67", "HAVCR2", "LAG3") # already done previously!
+# 
+# Lowery8 <- c("ATP10D", "GZMB", "ENTPD1", "KIR2DL4", "LAYN", "HTRA1", "CD70", "CXCR6", "HMOX1", "ADGRG1", "LRRN3", "ACP5", "CTSW", "GALNT2", "LINC01480", "CARS", "LAG3", "TOX", "PTPRCAP", "ASB2", "ITGB7", "PTMS", "NKTA", "GPR68", "NSMCE1", "ABI3", "SLC1A4", "PLEKHF1", "NKTB", "LINC01871", "CCL4", "NKG7", "CLIC3", "NDFIP2", "PLPP1", "PCED1B", "CXCL13", "PDCD1", "PRF1", "HLA-DMA", "GPR25", "CD9", "TIGIT", "HLA-DRB5", "SYTL3", "SLF1", "NEK1", "CASP1", "SMC4", "TSEN54", "PLSCR1", "GNPTAB", "HLA-DPB1", "PLEKHA1", "ARHGAP9", "ALOX5AP", "SH3BP1", "NCF4", "NELL2", "GATA3", "PPM1M", "TNFRSF1A", "AC022706.1", "MCM5", "HLA-DRB1", "TNFSF10", "TRIM21", "HDLBP", "ERN1", "CALHM2", "SASH3", "ACTA2", "MAST4", "CAPG", "MPST", "IGFLR1", "GZMA", "CD27", "ITGAE", "SLA2", "RHOC", "COMMD8", "MYO1G", "SP140", "PHPT1", "CD2BP2", "PLEKHO1", "STAM", "MRPL16", "IL2RB", "ID2", "TESPA1", "GOLGA8B", "MIS18BP1", "VAMP5", "DAPK2", "HLA-DPA1", "TSG101", "IL4R", "CCND2", "CTSC", "TRAF3IP3", "NLRC3", "ORAI3", "GNLY", "MIR155HG", "CARD16", "NKT2", "ECH1", "JAML", "EEF1G", "ETFB", "DAXX", "RBM4", "HCST", "RAB27A", "YPEL2", "CHST12", "ARPC1B", "PDIA4", "PDIA6", "AC243960.1", "TBC1D10C", "PTPN6", "PYCARD", "BST2", "BTN3A2", "MTG1", "MLEC", "DUSP4", "GSDMD", "SLAMF1", "IFI6", "PCID2", "GIMAP1", "ITGA1", "CSNK2B", "CDK2AP2", "MYO1F", "AC004687.1", "PTTG1", "APOBEC3C", "TSPAN14", "MOB3A", "STXBP2", "LCP2", "PLA2G16", "LINC00649", "CST7", "TADA3", "SIT1", "APOBEC3G", "SUSD3", "CD3G", "CCL5", "CDC25B", "TNFRSF1B", "HMGN3", "THEMIS", "ASF1A", "CTNNB1", "FIBP", "CCDC85B", "POLR3GL", "GIMAP6", "ARL6IP1", "CALCOCO2", "CCPG1", "KLRB1", "ACAA2", "ISG15", "EIF4A1", "CAT", "MANF", "XAB2", "GRINA", "GLO1", "LSM2", "SLFN5", "FKBP1A", "AKNA", "TAP1", "LMO4", "APEH", "C12orf75", "TMEM14A", "DNPH1", "C17orf49", "NUDT5", "MGAT1", "CCDC69", "EIF4EBP1", "PDHB", "ARL3", "UCP2", "IFI35", "HSBP1", "LYST", "MRFAP1L1", "ITGAL", "AIP", "RASAL3", "CAPN1", "ITGB1", "RBPJ", "LBH", "DYNLL1", "NME2", "MT1F", "SYNGR2", "ABTB1", "ZGPAT", "CD63", "ILK", "SKA2", "TMEM204", "ACO2", "HOPX", "CRIP1", "OXNAD1", "CCS", "GRAP2", "GSTO1", "HADHB", "IL16", "PIN4", "CUEDC2", "CALM3", "SAMSN1", "HM13", "SNAP23", "LPCAT4", "FAAP20", "EFHD2", "PRDX3", "CCM2", "C22orf39", "SDHA", "ARRDC1", "MAP4K1", "NDUFA13", "IL27RA", "C14orf119") # already done previously
+
+# Calculate UCell scores with 2 CrOv.9pt signatures
+NKT <- AddModuleScore_UCell(
+  NKT, ncores = 8,
+  features = list(CrOv.CD8.9pt_fdr1_L2FC0.5 = sig1Genes, CrOv.CD8.9pt_fdr1_posL2FC0.5 = sig2Genes, Li.CD8dys = LiDYS)
+)
+
+CD8 <- AddModuleScore_UCell(
+  CD8, ncores = 8,
+  features = list(CrOv.CD8.9pt_fdr1_L2FC0.5 = sig1Genes, CrOv.CD8.9pt_fdr1_posL2FC0.5 = sig2Genes, Li.CD8dys = LiDYS)
+)
+
+saveRDS(NKT, "intgHarNKT_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_newSignatures_20230917.rds")
+saveRDS(CD8, "intgHarCD8_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_newSignatures_20230917.rds")
+
+```
+
+
+# 20230918-21 STARTS HERE!!!
+# TCR tumor reactive prediction for CD8 cells with single alpha/beta or 2alpha+1beta or 1alpha+2beta chains
+# This subset therefore has the unannotated clones with the same alpha/beta chain numbers as in the 110-clone training annotated set
+```{r subset CD8 cells with single alpha/beta or 2alpha.1beta or 1alpha.2beta}
+
+CD8 <- readRDS("intgHarCD8_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_newSignatures_20230917.rds")
+CD8tr <- readRDS("CrOv.9patients_CD8.allAnnotatedTCRs.subset_for_CrOv.9pt.TRsignature_norm.scale.50pc_20230917.rds")
+
+Var <- c("barcode", "Patient", "annotated_clone", "alphaClone", "betaClone",
+         "newSubcluster", "annotated_reactivity",
+         "CrOv.CD8.9pt_fdr1_L2FC0.5_UCell", "CrOv.CD8.9pt_fdr1_posL2FC0.5_UCell", 
+         "Li.CD8dys_UCell", "VanDerLeun.CD8_UCell", "Oliveira.CD8_UCell", 
+         "Hanada.CD8_UCell", "Chiffelle.CD8_UCell", "Zheng.CD8_UCell", "Lowery.CD8_UCell"
+        )
+signatures <- c("CrOv.9pt", "CrOv.9pt_UP", "Li", "VanDerLeun", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery")
+#NKT.TRscores <- FetchData(NKT, vars = Var) %>% arrange(Patient, desc(CrOv.CD8_consistentlyUP_UCell)) # 19563 NKT cells
+
+# Extract TR scores of 9 signatures from the CD8 subset 
+CD8.TRscores <- FetchData(CD8, vars = Var) %>% filter(alphaClone != "undetected" & betaClone != "undetected") %>%
+  data.table::setnames(c("CrOv.CD8.9pt_fdr1_L2FC0.5_UCell", "CrOv.CD8.9pt_fdr1_posL2FC0.5_UCell", 
+         "Li.CD8dys_UCell", "VanDerLeun.CD8_UCell", "Oliveira.CD8_UCell", "Hanada.CD8_UCell",
+         "Chiffelle.CD8_UCell", "Zheng.CD8_UCell", "Lowery.CD8_UCell"),
+         signatures) %>% 
+  separate(alphaClone, into = c("alpha1", "alpha2"), sep = ";", remove = F) %>%
+  separate(betaClone, into = c("beta1", "beta2"), sep = ";", remove = F) # 5319 cells
+
+# Filter for cells with 2alpha.2beta
+CD8.quadChain <- CD8.TRscores %>% filter(!is.na(alpha2) & !is.na(beta2)) # 47 cells with 2alpha.2beta
+
+# Keep cells with only 2-3 chains (1alpha.1beta, 2alpha.1beta, 1alpha.2beta)
+CD8.TRscores <- CD8.TRscores %>% filter(barcode %nin% CD8.quadChain$barcode) # 5272 cells for TR prediction analysis
+
+
+# Extract cells with reversely ordered 2 alpha or 2 beta chains
+# Filter FOR cells with reversely ordered alpha chains
+CD8.alpha1Dup <- CD8.TRscores %>% filter(alpha1 %in% alpha2) %>% arrange(alpha1) # 735 cells with alpha1 chain present in alpha2
+CD8.alpha1Dup.w.alpha2 <- CD8.TRscores %>% 
+  filter(alpha2 %in% CD8.alpha1Dup$alpha1 & alpha1 %in% CD8.alpha1Dup$alpha2) %>% arrange(betaClone, alpha1)
+
+# Filter FOR clones with duplicated beta chains
+CD8.beta1Dup <- CD8.TRscores %>% filter(beta1 %in% beta2) %>% arrange(beta1) # 277 cells with beta1 chain present in beta2
+CD8.beta1Dup.w.beta2 <- CD8.TRscores %>% 
+  filter(beta2 %in% CD8.beta1Dup$beta1 & beta1 %in% CD8.beta1Dup$beta2) %>% arrange(alphaClone, beta1)
+
+write.table(CD8.alpha1Dup.w.alpha2, "CD8clones_for_TRprediction_alphaDup_20230920.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CD8.beta1Dup.w.beta2, "CD8clones_for_TRprediction_betaDup_20230920.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+# NOTE: Open in Excel and reorder the 2 alpha/beta chains, then import the corrected files here for continuing analysis!!!!!!
+CD8.alphaDup.correct <- read.table("CD8clones_for_TRprediction_alphaDup_corrected_20230920.txt", header = T)
+CD8.betaDup.correct <- read.table("CD8clones_for_TRprediction_betaDup_corrected_20230920.txt", header = T)
+
+# Replace 325 (293+32) cells with uncorrectly ordered chains in original 5272-cell set with the correctly ordered cells
+CD8.TRscores.nonDup <- CD8.TRscores %>% 
+  filter(barcode %nin% c(CD8.alphaDup.correct$barcode, CD8.betaDup.correct$barcode)) # 4947 corrected cells
+
+# Correct the CD8 set of 5272 cells for TR analysis
+barcode <- CD8.TRscores %>% select(barcode)
+CD8.TRscores.correct <- rbind(CD8.TRscores.nonDup, CD8.alphaDup.correct, CD8.betaDup.correct) # 5772 including corrected cells
+CD8.TRscores <- barcode %>% left_join(CD8.TRscores.correct) %>% 
+  mutate(cloneID = ifelse(annotated_clone == "others", paste(Patient, alpha1, alpha2, beta1, beta2, sep = ";"), as.character(annotated_clone)))
+length(unique(CD8.TRscores$cloneID)) # 2509 unique clones
+
+# verify unique clones in the corrected CD8 set of 923 annotated cells
+anno <- CD8.TRscores %>% filter(annotated_reactivity != "ND")
+length(unique(anno$cloneID)) # 110 unique clones :-)
+
+# Get unique clones with cell number
+CD8.TRscores.cellNb <- CD8.TRscores %>% 
+  group_by(Patient, cloneID) %>% summarise(cellNb = n()) %>%
+  arrange(desc(cellNb)) # 2509 clones per signature with 1 or 2 alpha/beta chains
+
+write.table(CD8.TRscores, "intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CD8.TRscores.cellNb, "intgHarCD8_CrOv.9pt_non.quad.TCRs_2509.unique.clones_for_tumor.reactivity.prediction_20230920.txt",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+### 20230926 STARTS HERE!!!
+# Prediction for the training annotated clone set
+```{r Get scores for TR prediction for the annotated clone set CD8tr}
+
+CD8.TRscores <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T) 
+CD8.TRscores.cellNb <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_2509.unique.clones_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T)
+
+## CD8tr subset
+CD8tr.TRscores <- CD8.TRscores %>% filter(annotated_reactivity != "ND") # 923 CD8 cells with known reactivity & having both alpha+beta chains
+CD8tr.TRscores$annotated_reactivity <- factor(CD8tr.TRscores$annotated_reactivity, levels = c("nonreactive", "reactive"))
+CD8tr.TRscores.cellNb <- CD8tr.TRscores %>% group_by(Patient, annotated_clone, annotated_reactivity) %>% summarise(cellNb = n()) # 110 unique clones with known reactivity of all 9 patients
+CD8tr.TRscores.long <- CD8tr.TRscores %>% pivot_longer(cols = c(CrOv.9pt, Li:Lowery), names_to = "signature", values_to = "TRscore") %>% arrange(signature, annotated_clone) # Omit CrOv.9pt_UP signature from the signature list
+
+# CD8tr max score
+CD8tr.max <- CD8tr.TRscores.long %>% group_by(signature, Patient, annotated_clone) %>% 
+  arrange(desc(TRscore)) %>% distinct(annotated_clone, .keep_all = TRUE) %>%
+  arrange(signature, Patient, desc(TRscore)) %>%
+  left_join(CD8tr.TRscores.cellNb) %>%
+  data.table::setnames("TRscore", "maxTRscore") #%>% 
+  #select(signature:cellNb, barcode:CLONE)
+
+CD8tr.max2 <- CD8tr.max %>% select(signature, maxTRscore, annotated_clone, annotated_reactivity) %>% pivot_wider(names_from = signature, values_from = maxTRscore)
+
+```
+
+
+
+```{r Score histograms & density plot of training set}
+
+signatures <- c("CrOv.9pt", "Li", "VanDerLeun", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery")
+
+# Examine the TR score histograms per signature
+pdf("intgHarCD8_CrOv.9pt_histograms_of_max.cloneTR.scores_and_cellTR.scores_per_signatures_20230926.pdf")
+par(mfrow = c(3,3))
+for (i in signatures) {
+  df <- CD8tr.max %>% filter(signature == i)
+  hist(df$maxTRscore, main = i, xlab = "max TRclone score")
+}
+for (i in signatures) {
+  df <- CD8tr.TRscores.long %>% filter(signature == i)
+  hist(df$TRscore, main = i, xlab = "TRcell score")
+}
+dev.off()
+
+# Examine the density plot of TR score distribution per reactivity class
+pdf("intgHarCD8_CrOv.9pt_densityPlots_of_max.cloneTR.scores_and_cellTR.scores_per_signature_20230926.pdf",
+    width = 16, height = 8)
+d10 <- densityplot( ~ CrOv.9pt, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "CrOv.9pt", xlab = "max cloneTR score")
+# d11 <- densityplot( ~ CrOv.9pt_UP, 
+#                    data = CD8tr.max2,
+#                    groups = annotated_reactivity,
+#                    auto.key = TRUE,
+#                    main = "CrOv.9pt_UP", xlab = "max cloneTR score")
+d12 <- densityplot( ~ Li, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Li", xlab = "max cloneTR score")
+d13 <- densityplot( ~ VanDerLeun, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "VanDerLeun", xlab = "max cloneTR score")
+d14 <- densityplot( ~ Oliveira, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Oliveira", xlab = "max cloneTR score")
+d15 <- densityplot( ~ Hanada, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Hanada", xlab = "max cloneTR score")
+d16 <- densityplot( ~ Chiffelle, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Chiffelle", xlab = "max cloneTR score")
+d17 <- densityplot( ~ Zheng, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Zheng", xlab = "max cloneTR score")
+d18 <- densityplot( ~ Lowery, 
+                   data = CD8tr.max2,
+                   groups = annotated_reactivity,
+                   auto.key = TRUE,
+                   main = "Lowery", xlab = "max cloneTR score")
+
+d1 <- densityplot( ~ CrOv.9pt, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "CrOv.9pt", xlab = "cellTR score")
+# d2 <- densityplot( ~ CrOv.9pt_UP, 
+#             data = CD8tr.TRscores,
+#             groups = annotated_reactivity,
+#             auto.key = TRUE,
+#             main = "CrOv.9pt_UP", xlab = "cellTR score")
+d3 <- densityplot( ~ Li, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Li", xlab = "cellTR score")
+d4 <- densityplot( ~ VanDerLeun, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "VanDerLeun", xlab = "cellTR score")
+d5 <- densityplot( ~ Oliveira, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Oliveira", xlab = "cellTR score")
+d6 <- densityplot( ~ Hanada, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Hanada", xlab = "cellTR score")
+d7 <- densityplot( ~ Chiffelle, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Chiffelle", xlab = "cellTR score")
+d8 <- densityplot( ~ Zheng, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Zheng", xlab = "cellTR score")
+d9 <- densityplot( ~ Lowery, 
+            data = CD8tr.TRscores,
+            groups = annotated_reactivity,
+            auto.key = TRUE,
+            main = "Lowery", xlab = "cellTR score")
+
+plot_grid(d10, d12, d13, d14, d15, d16, d17, d18, ncol = 3)
+plot_grid(d1, d3, d4, d5, d6, d7, d8, d9, ncol = 3)
+dev.off()
+
+rm(d1,d3,d4,d5,d6,d7,d8,d9,d10,d12,d13,d14,d15,d16,d17,d18, df, i)
+
+```
+
+
+
+```{r plot ROC & AUC with max cloneTR scores}
+# 1. 
+# 1a. calculate auc with ci of auc
+crov <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$CrOv.9pt)
+#crov2 <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$CrOv.9pt_UP)
+li <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Li)
+
+vdleun <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$VanDerLeun)
+oliveira <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Oliveira)
+hanada <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Hanada)
+
+chiffele <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Chiffelle)
+zheng <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Zheng)
+lowery <- roc(CD8tr.max2$annotated_reactivity, CD8tr.max2$Lowery)
+
+# 1b. t-tests between reference signature (CrOv.9pt) and other signatures
+#test12 <- roc.test(crov, crov2)
+test13 <- roc.test(crov, li)
+test14 <- roc.test(crov, vdleun)
+test15 <- roc.test(crov, oliveira)
+test16 <- roc.test(crov, hanada)
+test17 <- roc.test(crov, chiffele)
+test18 <- roc.test(crov, zheng)
+test19 <- roc.test(crov, lowery)
+
+# 1c. plot
+pdf("intgHarCD8_CrOv.9pt_allAnnotatedTCRs_AUC_and_pval.ttest_of_multiple.signatures_by_max.clone.TRscores_20230926.pdf", width = 7.7, height = 5.3)
+plot(crov, print.auc=FALSE, col="darkred", lwd=2, legacy.axes=TRUE,
+     main = "AUC of each signature using max cloneTR scores",
+     xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)")
+#plot(crov2, print.auc=FALSE, col="brown1", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(li, print.auc=FALSE, col="brown1", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+plot(vdleun, print.auc=FALSE, col="orange", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(oliveira, print.auc=FALSE, col="lightgreen", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(hanada, print.auc=FALSE, col="seagreen", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+plot(chiffele, print.auc=FALSE, col="cornflowerblue", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(zheng, print.auc=FALSE, col="blue", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(lowery, print.auc=FALSE, col="purple", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+legend("bottomright",
+       legend = c("CrOv.9pt", "Li", "VanDerLeun", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+       col = c("darkred", "brown1", "orange", "lightgreen", "seagreen", "cornflowerblue", "blue", "purple"),
+       lwd = 2, cex = 0.7
+)
+
+# add text for AUCs
+text(0.55, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="darkred", cex = 0.7)
+#text(0.55, 0.35, paste("AUC :", round(crov2$auc, 3)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.55, 0.3, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="brown1", cex = 0.7)
+
+text(0.55, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="orange", cex = 0.7)
+text(0.55, 0.2, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="lightgreen", cex = 0.7)
+text(0.55, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="seagreen", cex = 0.7)
+
+text(0.55, 0.1, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="cornflowerblue", cex = 0.7)
+text(0.55, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="blue", cex = 0.7)
+text(0.55, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="purple", cex = 0.7)
+
+# add text for p.values of t-tests
+#text(0.3, 0.35, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.3, 0.3, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="orange", cex = 0.7)
+text(0.3, 0.2, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="lightgreen", cex = 0.7)
+text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="seagreen", cex = 0.7)
+text(0.3, 0.1, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="cornflowerblue", cex = 0.7)
+text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="blue", cex = 0.7)
+text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="purple", cex = 0.7)
+
+dev.off()
+
+# 1d. save results
+#for (i in c(crov, li, vdleun, oliveira, hanada, chiffele, zheng, lowery)) {
+saveROC <- function(rocObj, sigName) {
+  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  best <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  ci <- pROC::ci(rocObj, of = "auc")
+  names(ci) <- c("CI95%low", "AUC", "CI95%high")
+  ci$signature <- sigName
+  ci <- as.data.frame(ci) %>% select(signature, 1:3)
+  l <- list(res, best, ci)
+  names(l) <- c("result", "best", "ciAUC")
+  return(l)
+}
+
+l1 <- saveROC(crov, "CrOv.9pt")
+#l2 <- saveROC(crov2, "CrOv.9pt_UP")
+l3 <- saveROC(li, "Li")
+l4 <- saveROC(vdleun, "VanDerLeun")
+l5 <- saveROC(oliveira, "Oliveira")
+l6 <- saveROC(hanada, "Hanada")
+l7 <- saveROC(chiffele, "Chiffelle")
+l8 <- saveROC(zheng, "Zheng")
+l9 <- saveROC(lowery, "Lowery")
+
+Res <- rbind(l1$result, l3$result, l4$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+Best <- rbind(l1$best, l3$best, l4$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+CI <- rbind(l1$ciAUC, l3$ciAUC, l4$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+write.table(Res, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_ROC.results_of_multiple.signatures_using_max.cloneTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(Best, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_ROC.bestThreshold_of_multiple.signatures_using_max.cloneTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CI, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_AUC_with_CI95_of_multiple.signatures_using_max.cloneTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+# manual pick of best thresholds for CrOv.9pt and Li using max cloneTR scores:
+#signature	threshold	specificity	sensitivity	accuracy	tn	tp	fn	fp	npv	ppv	fdr	fpr	tpr	tnr	fnr	1-specificity	1-sensitivity	1-accuracy	1-npv	1-ppv	precision	recall	youden	closest.topleft
+#CrOv.9pt	0.176460057471264	0.833333333333333	0.75	0.818181818181818	75	15	5	15	0.9375	0.5	0.5	0.166666666666667	0.75	0.833333333333333	0.25	0.166666666666667	0.25	0.181818181818182	0.0625	0.5	0.5	0.75	1.58333333333333	0.0902777777777778
+#Li	0.222205555555556	0.788888888888889	0.65	0.763636363636364	71	13	7	19	0.91025641025641	0.40625	0.59375	0.211111111111111	0.65	0.788888888888889	0.35	0.211111111111111	0.35	0.236363636363636	0.0897435897435898	0.59375	0.40625	0.65	1.43888888888889	0.167067901234568
+
+```
+
+
+
+```{r plot ROC & AUC with cellTR scores}
+# 2. 
+# 2a. calculate AUC
+crov <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$CrOv.9pt)
+#crov2 <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$CrOv.9pt_UP)
+li <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Li)
+
+vdleun <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$VanDerLeun)
+oliveira <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Oliveira)
+hanada <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Hanada)
+
+chiffele <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Chiffelle)
+zheng <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Zheng)
+lowery <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Lowery)
+
+# 2b. t-test of AUC between each pair of (CrOv.9pt signature vs. other signature)
+#test12 <- roc.test(crov, crov2)
+test13 <- roc.test(crov, li)
+test14 <- roc.test(crov, oliveira)
+test15 <- roc.test(crov, hanada)
+test16 <- roc.test(crov, vdleun)
+test17 <- roc.test(crov, chiffele)
+test18 <- roc.test(crov, lowery)
+test19 <- roc.test(crov, zheng)
+
+# 2c. plot
+pdf("intgHarCD8_CrOv.9pt_allAnnotatedTCRs_AUC_and_pval.ttest_of_multiple.signatures_by_cell.TRscores_20230926.pdf", width = 7.7, height = 5.3)
+plot(crov, print.auc=FALSE, col="darkred", lwd=2, legacy.axes=TRUE,
+     main = "AUC of each signature using cellTR scores",
+     xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)"
+)
+#plot(crov2, print.auc=FALSE, col="brown1", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(li, print.auc=FALSE, col="brown1", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+plot(oliveira, print.auc=FALSE, col="orange", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(hanada, print.auc=FALSE, col="lightgreen", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(vdleun, print.auc=FALSE, col="seagreen", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+plot(chiffele, print.auc=FALSE, col="cornflowerblue", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(lowery, print.auc=FALSE, col="blue", lwd=2, legacy.axes=TRUE, add=TRUE)
+plot(zheng, print.auc=FALSE, col="purple", lwd=2, legacy.axes=TRUE, add=TRUE)
+
+legend("bottomright",
+       legend = c("CrOv.9pt", "Li", "Oliveira", "Hanada", "VanDerLeun", "Chiffelle", "Lowery", "Zheng"),
+       col = c("darkred", "brown1", "orange", "lightgreen", "seagreen", "cornflowerblue", "blue", "purple"),
+       lwd = 2, cex = 0.7
+)
+
+# add text for AUC values
+text(0.55, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="darkred", cex = 0.7)
+#text(0.55, 0.35, paste("AUC :", round(crov2$auc, 3)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.55, 0.3, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="brown1", cex = 0.7)
+
+text(0.55, 0.25, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="orange", cex = 0.7)
+text(0.55, 0.2, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="lightgreen", cex = 0.7)
+text(0.55, 0.15, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="seagreen", cex = 0.7)
+
+text(0.55, 0.1, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="cornflowerblue", cex = 0.7)
+text(0.55, 0.05, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="blue", cex = 0.7)
+text(0.55, 0.01, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="purple", cex = 0.7)
+
+# add text for p.values of t-tests
+#text(0.3, 0.35, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.3, 0.3, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="brown1", cex = 0.7)
+text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="orange", cex = 0.7)
+text(0.3, 0.2, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="lightgreen", cex = 0.7)
+text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="seagreen", cex = 0.7)
+text(0.3, 0.1, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="cornflowerblue", cex = 0.7)
+text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="blue", cex = 0.7)
+text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="purple", cex = 0.7)
+
+dev.off()
+
+# 2d. save results
+l1 <- saveROC(crov, "CrOv.9pt")
+#l2 <- saveROC(crov2, "CrOv.9pt_UP")
+l3 <- saveROC(li, "Li")
+
+l4 <- saveROC(oliveira, "Oliveira")
+l5 <- saveROC(hanada, "Hanada")
+l6 <- saveROC(vdleun, "VanDerLeun")
+
+l7 <- saveROC(chiffele, "Chiffelle")
+l8 <- saveROC(lowery, "Lowery")
+l9 <- saveROC(zheng, "Zheng")
+
+Res <- rbind(l1$result, l3$result, l4$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+Best <- rbind(l1$best, l3$best, l4$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
+CI <- rbind(l1$ciAUC, l3$ciAUC, l4$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+write.table(Res, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_ROC.results_of_multiple.signatures_using_cellTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(Best, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_ROC.bestThreshold_of_multiple.signatures_using_cellTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CI, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_AUC_with_CI95_of_multiple.signatures_using_cellTRscores_20230926.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+# manual pick for best thresholds of cellTR scores:
+#signature	threshold	specificity	sensitivity	accuracy	tn	tp	fn	fp	npv	ppv	fdr	fpr	tpr	tnr	fnr	1-specificity	1-sensitivity	1-accuracy	1-npv	1-ppv	precision	recall	youden	closest.topleft
+#CrOv.9pt	0.0733614942528736	0.795321637426901	0.916317991631799	0.826652221018418	544	219	20	140	0.964539007092199	0.610027855153203	0.389972144846797	0.204678362573099	0.916317991631799	0.795321637426901	0.0836820083682008	0.204678362573099	0.0836820083682008	0.173347778981582	0.0354609929078015	0.389972144846797	0.610027855153203	0.916317991631799	1.7116396290587	0.0488959106301408
+#Li	0.174894444444444	0.796783625730994	0.430962343096234	0.702058504875406	545	103	136	139	0.800293685756241	0.425619834710744	0.574380165289256	0.203216374269006	0.430962343096234	0.796783625730994	0.569037656903766	0.203216374269006	0.569037656903766	0.297941495124594	0.199706314243759	0.574380165289256	0.425619834710744	0.430962343096234	1.22774596882723	0.365100749745568
+
+rm(list = ls())
+
+```
+# 20230926 STOPS HERE !!! 
+
+
+# (20230921 STARTS HERE!!!)
+# Prediction for the training annotated clone set
+```{r Get scores for TR prediction for the annotated clone set CD8tr}
+
+CD8.TRscores <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T) 
+CD8.TRscores.cellNb <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_2509.unique.clones_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T)
+
+## CD8tr subset
+CD8tr.TRscores <- CD8.TRscores %>% filter(annotated_reactivity != "ND") # 923 CD8 cells with known reactivity & having both alpha+beta chains
+CD8tr.TRscores$annotated_reactivity <- factor(CD8tr.TRscores$annotated_reactivity, levels = c("nonreactive", "reactive"))
+CD8tr.TRscores.cellNb <- CD8tr.TRscores %>% group_by(Patient, annotated_clone, annotated_reactivity) %>% summarise(cellNb = n()) # 110 unique clones with known reactivity of all 9 patients
+CD8tr.TRscores.long <- CD8tr.TRscores %>% pivot_longer(cols = CrOv.9pt:Lowery, names_to = "signature", values_to = "TRscore") %>% arrange(signature, annotated_clone)
+
+# CD8tr max score
+CD8tr.max <- CD8tr.TRscores.long %>% group_by(signature, Patient, annotated_clone) %>% 
+  arrange(desc(TRscore)) %>% distinct(annotated_clone, .keep_all = TRUE) %>%
+  arrange(signature, Patient, desc(TRscore)) %>%
+  left_join(CD8tr.TRscores.cellNb) %>%
+  data.table::setnames("TRscore", "maxTRscore") #%>% 
+  #select(signature:cellNb, barcode:CLONE)
+
+CD8tr.max2 <- CD8tr.max %>% select(signature, maxTRscore, annotated_clone, annotated_reactivity) %>% pivot_wider(names_from = signature, values_from = maxTRscore)
+
+```
+
+
+# Select thresholds for 2 best-performing signatures (CrOv.9pt & Li) based on AUC & ROC analysis to predict clone & cell TR
+```{r prediction for annotated clones}
+
+threshold_CrOv.9pt = 0.176460057471264
+threshold_Li = 0.222205555555556 
+  
+CD8tr.predClone <- CD8tr.max2 %>% select(Patient, annotated_clone, annotated_reactivity, CrOv.9pt, Li) %>% 
+  mutate(CrOv_clonePrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>% 
+  mutate(CrOv_clonePredictionStatus = 
+           case_when(annotated_reactivity == "reactive" & CrOv_clonePrediction == "pred.reactive" ~ "TP",
+                     annotated_reactivity == "nonreactive" & CrOv_clonePrediction == "pred.nonreactive" ~ "TN",
+                     annotated_reactivity == "reactive" & CrOv_clonePrediction == "pred.nonreactive" ~ "FN",
+                     annotated_reactivity == "nonreactive" & CrOv_clonePrediction == "pred.reactive" ~ "FP"
+                     )
+         ) %>% 
+  mutate(Li_clonePrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>% 
+  mutate(Li_clonePredictionStatus = 
+           case_when(annotated_reactivity == "reactive" & Li_clonePrediction == "pred.reactive" ~ "TP",
+                     annotated_reactivity == "nonreactive" & Li_clonePrediction == "pred.nonreactive" ~ "TN",
+                     annotated_reactivity == "reactive" & Li_clonePrediction == "pred.nonreactive" ~ "FN",
+                     annotated_reactivity == "nonreactive" & Li_clonePrediction == "pred.reactive" ~ "FP"
+                     )
+         ) %>% 
+  mutate(sharePredictionStatus = ifelse(CrOv_clonePredictionStatus == Li_clonePredictionStatus, "common", "different")) %>% 
+  right_join(CD8tr.TRscores.cellNb) %>% 
+  arrange(desc(cellNb), sharePredictionStatus)
+
+write.table(CD8tr.predClone, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_clone.prediction.status_for_CrOv.and.Li.signatures_20230920.txt",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+CD8tr.predClone$CrOv_clonePredictionStatus <- factor(CD8tr.predClone$CrOv_clonePredictionStatus, levels = c("TP", "FN", "TN", "FP"))
+CD8tr.predClone$Li_clonePredictionStatus <- factor(CD8tr.predClone$Li_clonePredictionStatus, levels = c("TP", "FN", "TN", "FP"))
+
+```
+
+
+```{r prediction for annotated cells}
+
+threshold_CrOv.9pt = 0.0733614942528736
+threshold_Li = 0.174894444444444 
+
+CrOv.predCell <- CD8tr.TRscores %>% select(barcode, Patient, annotated_clone, annotated_reactivity, CrOv.9pt) %>% 
+  mutate(CrOv_cellPrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, annotated_clone, CrOv_cellPrediction) %>% 
+  summarise(CrOv_count.pred.reactive = n()) %>% 
+  filter(CrOv_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8tr.TRscores.cellNb) %>% 
+  replace_na(list(CrOv_cellPrediction = "pred.reactive", CrOv_count.pred.reactive = 0)) %>% 
+  mutate(CrOv_perc.pred.reactive = round(CrOv_count.pred.reactive/cellNb,2)) %>% 
+  mutate(CrOv_perc.pred.nonreactive = 1 - CrOv_perc.pred.reactive) %>% 
+  mutate(CrOv_clonePrediction = ifelse(CrOv_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>% 
+  mutate(CrOv_clonePrediction.status = 
+           case_when(annotated_reactivity == "reactive" & CrOv_clonePrediction == "pred.reactive" ~ "TP",
+                     annotated_reactivity == "reactive" & CrOv_clonePrediction == "pred.nonreactive" ~ "FN",
+                     annotated_reactivity == "nonreactive" & CrOv_clonePrediction == "pred.nonreactive" ~ "TN",
+                     annotated_reactivity == "nonreactive" & CrOv_clonePrediction == "pred.reactive" ~ "FP")) %>% 
+  mutate(cell.threshold_CrOv.9pt = threshold_CrOv.9pt)
+
+Li.predCell <- CD8tr.TRscores %>% select(barcode, Patient, annotated_clone, annotated_reactivity, Li) %>% 
+  mutate(Li_cellPrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, annotated_clone, Li_cellPrediction) %>% 
+  summarise(Li_count.pred.reactive = n()) %>% 
+  filter(Li_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8tr.TRscores.cellNb) %>% 
+  replace_na(list(Li_cellPrediction = "pred.reactive", Li_count.pred.reactive = 0)) %>% 
+  mutate(Li_perc.pred.reactive = round(Li_count.pred.reactive/cellNb,2)) %>% 
+  mutate(Li_perc.pred.nonreactive = 1 - Li_perc.pred.reactive) %>% 
+  mutate(Li_clonePrediction = ifelse(Li_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>% 
+  mutate(Li_clonePrediction.status = 
+           case_when(annotated_reactivity == "reactive" & Li_clonePrediction == "pred.reactive" ~ "TP",
+                     annotated_reactivity == "reactive" & Li_clonePrediction == "pred.nonreactive" ~ "FN",
+                     annotated_reactivity == "nonreactive" & Li_clonePrediction == "pred.nonreactive" ~ "TN",
+                     annotated_reactivity == "nonreactive" & Li_clonePrediction == "pred.reactive" ~ "FP")) %>% 
+  mutate(cell.threshold_Li = threshold_Li)
+
+# prepare df for plotting
+cloneOrd <- CD8tr.predClone %>% select(Patient, annotated_clone, annotated_reactivity, cellNb)
+
+CD8tr.predCell <- left_join(CrOv.predCell, Li.predCell) %>% 
+  mutate(sharePrediction.status = ifelse(CrOv_clonePrediction.status == Li_clonePrediction.status, "common", "different"))
+CD8tr.predCell <- left_join(cloneOrd, CD8tr.predCell)
+  
+write.table(CD8tr.predCell, "intgHarCD8_CrOv.9pt_allAnnotatedTCRs_cell.prediction.status_for_CrOv.and.Li.signatures_20230920.txt",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+CD8tr.predCell$CrOv_clonePrediction.status <- factor(CD8tr.predCell$CrOv_clonePrediction.status, levels = c("TP", "FN", "TN", "FP"))
+CD8tr.predCell$Li_clonePrediction.status <- factor(CD8tr.predCell$Li_clonePrediction.status, levels = c("TP", "FN", "TN", "FP"))
+
+# Separate 2 cellPrediction tables by signature
+CrOv.predCell <- select(CD8tr.predCell, matches("CrOv")) %>% right_join(cloneOrd) %>% 
+  data.table::setnames(c("CrOv_perc.pred.reactive", "CrOv_perc.pred.nonreactive", "CrOv_clonePrediction.status"), c("pred.reactive", "pred.nonreactive", "clonePrediction.status")) %>% 
+  pivot_longer(c("pred.reactive", "pred.nonreactive"), names_to = "cell.prediction.class", values_to = "cell.proportion")
+
+Li.predCell <- select(CD8tr.predCell, matches("Li")) %>% right_join(cloneOrd) %>% 
+  data.table::setnames(c("Li_perc.pred.reactive", "Li_perc.pred.nonreactive", "Li_clonePrediction.status"), c("pred.reactive", "pred.nonreactive", "clonePrediction.status")) %>% 
+  pivot_longer(c("pred.reactive", "pred.nonreactive"), names_to = "cell.prediction.class", values_to = "cell.proportion")
+ 
+```
+
+
+# Plot TR predictions for annotated set
+```{r plot clone & cell predictions for all annotated TCRs}
+
+cellCountPlot2 <- function(sigPred, sigName, cellPredDF) {
+  # 1. Plot clone prediction
+  p1 <- ggplot(CD8tr.predClone, 
+               aes(x = reorder(annotated_clone, -cellNb), y = cellNb, # reorder x-axis for plotting decreasing x-values
+                  pattern = sharePredictionStatus, fill = sigPred)) +
+    
+    geom_bar_pattern(stat = "identity",
+                    position = position_dodge(width = 1), # use "dodge" for side-by-side bars, "stack" for stacked bars
+                    color = NA, # color of bar border
+                    pattern_fill = "grey", # color of pattern
+                    pattern_density = 0.01, #size
+                    pattern_spacing = 0.01) +
+    
+    scale_pattern_manual(values = c(common = "none", different = "circle")) +
+    scale_fill_manual(values = c("gold1", "darkorange", "lightblue", "royalblue")) +
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0,0, 0.0,0)) +
+    ggtitle(paste("Prediction of clone & cell reactivity by", sigName, "signature")) +
+    ylab("cell count") +
+    xlab("") +
+    theme_classic() +
+    theme(aspect.ratio = 1/3, # axis size y/x
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 18, face = "bold"),
+          legend.position = "right",
+          legend.text = element_text(face = "bold")
+    ) +
+    geom_text(aes(label = cellNb), size = 1.8, color = "blue",
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    guides(pattern = guide_legend(override.aes = list(fill = "grey", color = "white"), title = "shared clone prediction"), # override default legend style
+           fill = guide_legend(override.aes = list(pattern = "none"), title = "clone prediction status")
+           )
+
+  # 2. Plot cell prediction
+    p2 <- ggplot(cellPredDF, 
+                 aes(x = reorder(annotated_clone, -cellNb), y = cell.proportion, # reorder x-axis for plotting decreasing x-values
+                  pattern = cell.prediction.class, fill = clonePrediction.status)) +
+    
+    geom_bar_pattern(stat = "identity",
+                    position = "stack", # use "dodge" for side-by-side bars, "stack" for stacked bars
+                    color = NA, # color of bar border 
+                    pattern_fill = "white", # color of pattern
+                    pattern_density = 0.01, #size
+                    pattern_spacing = 0.01) +
+    
+    scale_pattern_manual(values = c(pred.nonreactive = "none", pred.reactive = "circle")) +
+    scale_pattern_angle_manual(values = c(0, 90)) +
+    scale_fill_manual(values = c("gold1", "darkorange", "lightblue", "royalblue")) +
+    #facet_grid(~ Patient, switch = "x") +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+    
+    ylab("cell proportion") +
+    xlab("clone") +
+    theme_classic() +
+    theme(aspect.ratio = 1/3, # axis size y/x
+          axis.text.x = element_text(size = 4, face = "bold", angle = -30, hjust = 0.1, vjust = 0.2),
+          #axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 18, face = "bold"),
+          legend.position = "right",
+          legend.text = element_text(face = "bold")
+    ) +
+    geom_text(aes(label = cell.proportion), size = 1.8, color = "blue",
+              position = position_stack(vjust = 0.5)) + #to display text in the middle of the bar
+    guides(pattern = guide_legend(override.aes = list(fill = "grey", color = "white"), title = "cell prediction class"), # override default legend style
+           #pattern_angle = guide_legend(override.aes = list(fill = "white", color = "black")),
+           fill = guide_legend(override.aes = list(pattern = "none"), title = "clone prediction status")
+           )
+    
+  pdf(paste0("intgHarCD8_CrOv.9pt_clone.and.cell.TR.prediction_for_all.110.AnnotatedTCRs_with_", sigName, ".signatures_20230921.pdf"), width = 18, height = 10)
+  print(p1 + p2 + plot_layout(ncol = 1))
+  dev.off()
+}
+
+cellCountPlot2(CD8tr.predClone$CrOv_clonePredictionStatus, "CrOv", CrOv.predCell)    
+cellCountPlot2(CD8tr.predClone$Li_clonePredictionStatus, "Li", Li.predCell) 
+
+```
+
+
+
+# 20230927 STARTS HERE!!!!!
+# Prediction for the testing UNANNOTATED clone set
+```{r histograms of the testing unannotated clones, fig.width=10, fig.height=6}
+
+`%nin%` = Negate(`%in%`)
+
+CD8.TRscores <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T) 
+CD8.TRscores.cellNb <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_2509.unique.clones_for_tumor.reactivity.prediction_20230920.txt", sep = "\t", header = T)
+
+## Extract the CD8 testing set comprised of all unannotated clones
+CD8te.TRscores <- CD8.TRscores %>% filter(annotated_clone == "others") # 4349 unannotated cells
+CD8te.TRscores.cellNb <- CD8te.TRscores %>% group_by(Patient, cloneID) %>% summarise(cellNb = n()) # 2399 unique unannotated clones
+
+CD8te.TRscores.long <- CD8te.TRscores %>% pivot_longer(cols = c(CrOv.9pt, Li:Lowery), names_to = "signature", values_to = "TRscore") %>% arrange(signature, cloneID) 
+
+# CD8tr max score
+CD8te.max <- CD8te.TRscores.long %>% group_by(signature, Patient, cloneID) %>% 
+  arrange(desc(TRscore)) %>% distinct(cloneID, .keep_all = TRUE) %>%
+  arrange(signature, Patient, desc(TRscore)) %>%
+  left_join(CD8te.TRscores.cellNb) %>%
+  data.table::setnames("TRscore", "maxTRscore")
+
+CD8te.max2 <- CD8te.max %>% select(signature, maxTRscore, cloneID) %>% pivot_wider(names_from = signature, values_from = maxTRscore) %>% left_join(CD8te.TRscores.cellNb)
+write.table(CD8te.max2, "intgHarCD8_CrOv.9pt_cellCounts_and_maxCloneScores_of_2399.UNANNOTATED.clones_by_9.signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# Examine the TR score histogram per signature
+pdf("intgHarCD8_CrOv.9pt_histograms_of_max.cloneTR.scores_and_cellTR.scores_of_all.2399.UNANNOTATED.clones_for_CrOv.9pt_and_Li_signatures_20230927.pdf")
+par(mfrow = c(2,2))
+for (i in c("CrOv.9pt", "Li")) {
+  df <- CD8te.max %>% filter(signature == i)
+  hist(df$maxTRscore, main = i, xlab = "max TRclone score")
+}
+for (i in c("CrOv.9pt", "Li")) {
+  df <- CD8te.TRscores.long %>% filter(signature == i)
+  hist(df$TRscore, main = i, xlab = "TRcell score")
+}
+dev.off()
+
+```
+
+
+```{r TR prediction for UNANNOTATED clones}
+
+# 1. Predict clone TR by max clone score
+# threshold for clones (as specified above)
+# threshold_CrOv.9pt = 0.176460057471264
+# threshold_Li = 0.222205555555556 
+
+CD8te.clonePred <- CD8te.max2 %>% select(Patient, cloneID, cellNb, CrOv.9pt, Li) %>%
+  mutate(threshold_CrOv.9pt = 0.176460057471264) %>% mutate(threshold_Li = 0.222205555555556) %>%
+  mutate(CrOv_clonePrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>%
+  mutate(Li_clonePrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>%
+  mutate(shareClonePrediction = 
+           ifelse(CrOv_clonePrediction == "pred.reactive" & Li_clonePrediction == "pred.reactive", "common_pred.reactive",
+                  ifelse(CrOv_clonePrediction == "pred.nonreactive" & Li_clonePrediction == "pred.nonreactive", "common_pred.nonreactive",
+                         "different_prediction"))) %>%
+  data.table::setnames(c("CrOv.9pt", "Li"), c("CrOv.9pt_maxScore", "Li_maxScore")) %>%
+  arrange(desc(cellNb)) # 2399 clones
+
+write.table(CD8te.clonePred, "intgHarCD8_CrOv.9pt_tumor.reactive.prediction_of_2399.UNANNOTATED.clones_by_max.cloneTRscores_of_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# 2. Predict cell TR by cell score then predict clone TR by >= 50% predicted reactive cells
+# threshold for cells (as specified above)
+# threshold_CrOv.9pt = 0.0733614942528736
+# threshold_Li = 0.174894444444444 
+
+CrOv.cellTRpred <- CD8te.TRscores %>% select(barcode, Patient, cloneID, CrOv.9pt) %>%
+  mutate(threshold_CrOv.9pt = 0.0733614942528736) %>%
+  mutate(CrOv_cellPrediction = ifelse(CrOv.9pt > threshold_CrOv.9pt, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, cloneID, CrOv_cellPrediction) %>% 
+  summarise(CrOv_count.pred.reactive = n()) %>% 
+  filter(CrOv_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8te.TRscores.cellNb) %>% 
+  replace_na(list(CrOv_cellPrediction = "pred.reactive", CrOv_count.pred.reactive = 0)) %>% 
+  mutate(CrOv_perc.pred.reactive = round(CrOv_count.pred.reactive/cellNb,2)) %>% 
+  mutate(CrOv_perc.pred.nonreactive = 1 - CrOv_perc.pred.reactive) %>% 
+  mutate(CrOv_cellclonePrediction = ifelse(CrOv_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>%
+  arrange(desc(cellNb)) %>%
+  select(Patient, cloneID, cellNb, CrOv_count.pred.reactive, CrOv_perc.pred.reactive, CrOv_perc.pred.nonreactive, CrOv_cellclonePrediction)
+
+Li.cellTRpred <- CD8te.TRscores %>% select(barcode, Patient, cloneID, Li) %>%
+  mutate(threshold_Li = 0.174894444444444) %>%
+  mutate(Li_cellPrediction = ifelse(Li > threshold_Li, "pred.reactive", "pred.nonreactive")) %>% 
+  group_by(Patient, cloneID, Li_cellPrediction) %>% 
+  summarise(Li_count.pred.reactive = n()) %>% 
+  filter(Li_cellPrediction == "pred.reactive") %>% 
+  right_join(CD8te.TRscores.cellNb) %>% 
+  replace_na(list(Li_cellPrediction = "pred.reactive", Li_count.pred.reactive = 0)) %>% 
+  mutate(Li_perc.pred.reactive = round(Li_count.pred.reactive/cellNb,2)) %>% 
+  mutate(Li_perc.pred.nonreactive = 1 - Li_perc.pred.reactive) %>% 
+  mutate(Li_cellclonePrediction = ifelse(Li_perc.pred.reactive >= 0.5, "pred.reactive", "pred.nonreactive")) %>%
+  arrange(desc(cellNb)) %>%
+  select(Patient, cloneID, cellNb, Li_count.pred.reactive, Li_perc.pred.reactive, Li_perc.pred.nonreactive, Li_cellclonePrediction)
+
+# Combine cell.clone.pred from both signatures to get common/different predictions
+CD8te.cellclonePred <- CrOv.cellTRpred %>% left_join(Li.cellTRpred) %>%
+  mutate(shareCellClonePrediction = 
+           ifelse(CrOv_cellclonePrediction == "pred.reactive" & Li_cellclonePrediction == "pred.reactive", "common_pred.reactive",
+                  ifelse(CrOv_cellclonePrediction == "pred.nonreactive" & Li_cellclonePrediction == "pred.nonreactive", "common_pred.nonreactive",
+                         "different_prediction")))
+
+write.table(CD8te.cellclonePred, "intgHarCD8_CrOv.9pt_tumor.reactive.prediction_of_2399.UNANNOTATED.clones_by_cell.scores_and_predicted.reactive.cell.proportions_of_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+```
+
+
+```{r plotting prediction for unannotated clones}
+
+# 1. Commonly & differently predicted clones by 2 signatures
+# 1a. All patients combined
+clonePredProp <- CD8te.clonePred %>% group_by(shareClonePrediction) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "clone score") %>% data.table::setnames("shareClonePrediction", "prediction")
+
+cellclonePredProp <- CD8te.cellclonePred %>% group_by(shareCellClonePrediction) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "cell score") %>% data.table::setnames("shareCellClonePrediction", "prediction")
+
+# Combine 2 df
+PredProp <- rbind(clonePredProp, cellclonePredProp)
+PredProp$prediction <- factor(PredProp$prediction, levels = c("different_prediction", "common_pred.nonreactive", "common_pred.reactive"))
+PredProp$scoreType <- factor(PredProp$scoreType, levels = c("clone score", "cell score"))
+
+# Stacked bar plots of commonly and differently predicted clones
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 5, height = 4.5)
+ggplot(PredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  xlab("score method") + ylab("clone proportion") +
+  ggtitle("Proportion and number of clones", 
+          subtitle = "commonly and differently predicted \n by CrOv and Li signatures") +
+  scale_fill_manual(values = c("skyblue", "gold", "orange")) +
+  geom_text(aes(label = cloneNb), size = 3, position = position_stack(vjust = 0.5), color = "blue") +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0,0)) +
+  theme_classic() +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        legend.key.size = unit(0.3, "cm"),
+        legend.text = element_text(size = 7),
+        legend.title = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = -20, vjust = -0.3, hjust = 0.3)) +
+  guides(fill = guide_legend(ncol = 1))
+dev.off()
+
+
+# 1b. Per patient
+PPclonePredProp <- CD8te.clonePred %>% group_by(Patient, shareClonePrediction, .drop = F) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "clone score") %>% data.table::setnames("shareClonePrediction", "prediction")
+
+PPcellclonePredProp <- CD8te.cellclonePred %>% group_by(Patient, shareCellClonePrediction, .drop = F) %>% summarise(cloneNb = n()) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2)) %>% mutate(scoreType = "cell score") %>% data.table::setnames("shareCellClonePrediction", "prediction")
+
+# Combine 2 DFs
+PPpredProp <- rbind(PPclonePredProp, PPcellclonePredProp)
+PPpredProp$prediction <- factor(PPpredProp$prediction, levels = c("different_prediction", "common_pred.nonreactive", "common_pred.reactive"))
+PPpredProp$scoreType <- factor(PPpredProp$scoreType, levels = c("clone score", "cell score"))
+
+# Stack bar plot per patient
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_per.patient_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 10, height = 4.5)
+ggplot(PPpredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  xlab("score method") + ylab("clone proportion") +
+  ggtitle("Per patient proportion and number of clones", 
+          subtitle = "commonly and differently predicted by CrOv and Li signatures") +
+  scale_fill_manual(values = c("skyblue", "gold", "orange")) +
+  geom_text(aes(label = cloneNb), size = 3, position = position_stack(vjust = 0.5), color = "blue") +
+  scale_x_discrete(expand = c(0,0, 0.03,0)) +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme_classic() +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        legend.key.size = unit(0.5, "cm"),
+        legend.text = element_text(size = 9),
+        legend.title = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = -20, vjust = -0.3, hjust = 0.3)) +
+  guides(fill = guide_legend(ncol = 3))
+dev.off()
+
+
+# 2. Overlaps of TR or nonTR clones predicted by both cloneScore and cellScore methods per signature
+# Commonly TR predictions by clone score & cell score methods
+CrOv_cloneTR <- CD8te.clonePred %>% filter(CrOv_clonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+CrOv_cellTR <- CD8te.cellclonePred %>% filter(CrOv_cellclonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+Li_cloneTR <- CD8te.clonePred %>% filter(Li_clonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+Li_cellTR <- CD8te.cellclonePred %>% filter(Li_cellclonePrediction == "pred.reactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+
+# Commonly nonTR predictions by clone score & cell score methods
+CrOv_cloneNTR <- CD8te.clonePred %>% filter(CrOv_clonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+CrOv_cellNTR <- CD8te.cellclonePred %>% filter(CrOv_cellclonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+Li_cloneNTR <- CD8te.clonePred %>% filter(Li_clonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_clonePrediction, Li_clonePrediction)
+Li_cellNTR <- CD8te.cellclonePred %>% filter(Li_cellclonePrediction == "pred.nonreactive") %>% dplyr::select(Patient:cellNb, CrOv_cellclonePrediction, Li_cellclonePrediction)
+
+# Venn of TR and nonTR
+vennPlot <- function(x, y, predType, sigName, xcol, ycol) {
+  draw.venn(list_x = x, list_y = y, list_z = NULL,
+            title = paste("predicted", predType, "clones by", sigName),
+            subtitle = "",
+            xtitle = "clone score", ytitle = "cell score",
+            x_c = xcol, y_c = ycol, xt_c = xcol, yt_c = ycol,
+            nrtype = "pct"
+          )
+}
+
+pdf("intgHarCD8_CrOv.9pt_overlaps_of_predicted.clones_by_cloneScore_and_cellScore_methods_of_CrOv.9pt_and_Li_signatures_20230927.pdf")
+v1 <- vennPlot(CrOv_cloneTR$cloneID, CrOv_cellTR$cloneID, "reactive", "CrOv", "brown1", "gold")
+v2 <- vennPlot(Li_cloneTR$cloneID, Li_cellTR$cloneID, "reactive", "Li", "brown1", "gold")
+v3 <- vennPlot(CrOv_cloneNTR$cloneID, CrOv_cellNTR$cloneID, "nonreactive", "CrOv", "purple", "seagreen")
+v4 <- vennPlot(Li_cloneTR$cloneID, Li_cellTR$cloneID, "nonreactive", "Li", "purple", "seagreen")
+dev.off()
+
+l1 <- inner_join(CrOv_cloneTR, CrOv_cellTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "CrOv_pred.reactive_clone.and.cell")
+l2 <- inner_join(Li_cloneTR, Li_cellTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "Li_pred.reactive_clone.and.cell")
+l3 <- inner_join(CrOv_cloneNTR, CrOv_cellNTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "CrOv_pred.nonreactive_clone.and.cell")
+l4 <- inner_join(Li_cloneNTR, Li_cellNTR) %>% arrange(Patient, desc(cellNb)) %>% mutate(sharePrediction = "Li_pred.nonreactive_clone.and.cell")
+
+l <- rbind(l1, l2, l3, l4)
+write.table(l, "intgHarCD8_CrOv.9pt_overlaps_of_predicted.UNANNOTATED.clones_by_cloneScore_and_cellScore_methods_with_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+rm(l1, l2, l3, l4, v1, v2, v3, v4, CrOv_cloneTR, CrOv_cellTR, CrOv_cloneNTR, CrOv_cellNTR, Li_cloneTR, Li_cellTR, Li_cloneNTR, Li_cellNTR); gc()
+
+```
+
+
+# From here downstream use only clone Score method!!!
+```{r point plot for frequencies of predicted annotated clones, fig.width=13, fig.height=10}
+
+# CrOv
+f1 <- CD8te.clonePred %>% group_by(Patient, CrOv_clonePrediction, cellNb) %>% 
+  summarise(cloneNb = n()) %>%
+  mutate(prediction = paste0("clone_", CrOv_clonePrediction)) %>% ungroup() %>%
+  select(-CrOv_clonePrediction) %>%
+  group_by(Patient) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2))  %>%
+  data.table::setnames("cellNb", "cloneSize") %>%
+  mutate(signature = "CrOv")
+
+# Li
+f2 <- CD8te.clonePred %>% group_by(Patient, Li_clonePrediction, cellNb) %>% 
+  summarise(cloneNb = n()) %>%
+  mutate(prediction = paste0("clone_", Li_clonePrediction)) %>% ungroup() %>%
+  select(-Li_clonePrediction) %>%
+  group_by(Patient) %>% mutate(cloneProportion = round(cloneNb/sum(cloneNb)*100,2))  %>%
+  data.table::setnames("cellNb", "cloneSize") %>%
+  mutate(signature = "Li")
+
+# Combine both to save as 1 table
+DF <- rbind(f1, f2)
+write.table(DF, "intgHarCD8_CrOv.9pt_per.patient_frequency.number.and.size_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", row.names = F, col.names = T)
+
+# Plot
+p1 <- ggplot(f1, aes(x = cloneProportion, y = cloneSize, color = prediction, shape = prediction)) +
+  geom_point(aes(size = cloneNb)) +
+  scale_size_continuous(breaks = c(1, 10, 20, 50, 100, 200, 300, 400)) +
+  scale_color_manual(values = c("blue", "red1")) +
+  scale_shape_manual(values = c(2, 1)) +
+  scale_y_log10() +
+  annotation_logticks(outside = F, sides = "r") +
+  #facet_wrap(~ signature, nrow = 2, strip.position = "top", scales = "fixed") +
+  facet_grid(~ Patient, switch = "x", scales = "fixed") +
+  xlab("clone frequency") + ylab("clone size (cell number per clone)") +
+  ggtitle("Frequency of predicted clones per patient by CrOv signature") +
+  theme_bw() +
+  theme(aspect.ratio = 2, # axis size y/x
+          # axis.text.x = element_text(size = 10, angle = -30, hjust = 0.1, vjust = 0.2),
+          # axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 14, face = "bold"),
+          legend.position = "top",
+          legend.text = element_text(face = "bold")
+  ) +
+  guides(size = guide_legend(override.aes = list(shape = 1), title = "number of clones"),
+         shape = guide_legend(override.aes = list(size = 3)))
+p2 <- ggplot(f2, aes(x = cloneProportion, y = cloneSize, color = prediction, shape = prediction)) +
+  geom_point(aes(size = cloneNb)) +
+  scale_size_continuous(breaks = c(1, 10, 20, 50, 100, 200, 300, 400)) +
+  scale_color_manual(values = c("blue", "red1")) +
+  scale_shape_manual(values = c(2, 1)) +
+  scale_y_log10() +
+  annotation_logticks(outside = F, sides = "r") +
+  #facet_wrap(~ signature, nrow = 2, strip.position = "top", scales = "fixed") +
+  facet_grid(~ Patient, switch = "x", scales = "fixed") +
+  xlab("clone frequency") + ylab("clone size (cell number per clone)") +
+  ggtitle("Frequency of predicted clones per patient by Li signature") +
+  theme_bw() +
+  theme(aspect.ratio = 2, # axis size y/x
+          # axis.text.x = element_text(size = 10, angle = -30, hjust = 0.1, vjust = 0.2),
+          # axis.ticks.x = element_blank(),
+          plot.title = element_text(size = 14, face = "bold"),
+          legend.position = "top",
+          legend.text = element_text(face = "bold")) +
+  guides(size = guide_legend(override.aes = list(shape = 1), title = "number of clones"),
+         shape = guide_legend(override.aes = list(size = 3)))
+
+plot_grid(p1, p2, ncol = 1, align = "v")
+
+pdf("intgHarCD8_CrOv.9pt_per.patient_frequencies_of_predicted_UNANNOTATED.clones_grouped.by.cloneSize_with_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 13, height = 10)
+plot_grid(p1, p2, ncol = 1, align = "v")
+dev.off()
+
+```
+
+
+```{r cumulative frequency of prediction per patient, fig.width=8, fig.height=8}
+
+CF1 <- DF %>% group_by(signature, Patient, prediction) %>% summarise(cumuCloneFreq = sum(cloneProportion))
+
+CF <- DF %>% mutate(cellNb.sizeGroup = cloneSize*cloneNb) %>%
+  group_by(signature, Patient, prediction, .drop = F) %>% summarise(cellNb.of.predictionType = sum(cellNb.sizeGroup)) %>%
+  group_by(signature, Patient, .drop = F) %>% mutate(cumuCellFreq = round(cellNb.of.predictionType/sum(cellNb.of.predictionType)*100,2)) %>%
+  left_join(CF1)
+write.table(CF, "intgHarCD8_CrOv.9pt_per.patient_cumulative.frequencies_by.cellCounts.and.cloneCounts_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.txt", sep = "\t", row.names = F, col.names = T)
+
+pdf("intgHarCD8_per.patient_cumulative.frequencies.by.cellCounts_of_predicted.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 8, height = 8)
+
+p1 <- ggplot(CF, aes(x = signature, y = cumuCloneFreq, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  geom_text(aes(label = cumuCloneFreq), size = 2.5, color = "blue",
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("turquoise", "orange")) +
+  theme_classic() +
+  ggtitle("Per patient cumulative frequencies by clone counts of predicted clones") +
+  ylab("cumulative clone frequency") +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        title = element_text(face = "bold")
+        )
+
+p2 <- ggplot(CF, aes(x = signature, y = cumuCellFreq, fill = prediction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(~ Patient, switch = "x") +
+  geom_text(aes(label = cumuCellFreq), size = 2.5, color = "blue",
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("lightblue", "gold")) +
+  theme_classic() +
+  ggtitle("Per patient cumulative frequencies by cell counts of predicted clones") +
+  ylab("cumulative cell frequency") +
+  scale_y_continuous(expand = c(0.02,0, 0.02,0)) +
+  theme(aspect.ratio = 3/1,
+        legend.position = "top",
+        title = element_text(face = "bold")
+        )
+
+plot_grid(p1, p2, ncol = 1, align = "v")
+dev.off()
+
+
+```
+# 20230927 STOPS HERE!!!!!!!!!!!!!!!!!!!!
+
+
+
+
+# 20230922 ANALYSIS of CD8 pr
+# Re-do UMAPs for CD8 subset that has 5272 cells used for TR prediction
+```{r CD8pr analysis}
+
+# clean global environment
+rm(list = ls()); gc()
+
+# reload function & load necessary data
+`%nin%` = Negate(`%in%`)
+CD8.TRscores <- read.table("intgHarCD8_CrOv.9pt_non.quad.TCRs_5272cells_for_tumor.reactivity.prediction_20230920.txt",
+            sep = "\t", header = T)
+CD8 <- readRDS("intgHarCD8_CrOv.9pt_newSubclusters_cellLabels_cloneLabels_newSignatures_20230917.rds")
+
+CD8pr <- subset(CD8, subset = barcode %in% CD8.TRscores$barcode)
+rm(CD8); gc()
+
+```
+
+
+```{r seurat pipeline}
+
+seurat.pipeline <- function(seu, subSet, cohort){
+  #i <- subset(seu, subset = annotated_reactivity %in% annotatedReactivity & Patient %in% patient)
+  i <- as.SingleCellExperiment(seu)
+  cl100 = scran::quickCluster(i, min.size = 100) # can change this default min.size
+  i = scran::computeSumFactors(i, cluster = cl100)
+  i = scater::logNormCounts(i,
+                            log = T,
+                            transform = "log",
+                            pseudo_count = 1)
+  i <- as.Seurat(i, counts = "counts", data = "logcounts")
+  Idents(i) <- "patient"
+  i <- ScaleData(i, 
+                 features = rownames(i),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "CCdiff",
+                                     "percent.mt", "percent.ribo"))
+  i <- FindVariableFeatures(i,
+                            selection.method = "vst",
+                            nfeatures = 2000,
+                            mean.function = ExpMean,
+                            dispersion.function = LogVMR,
+                            num.bin = 40,
+                            binning.method = "equal_width", # "equal_frequency"
+                            mean.cutoff = c(0.0125, 4),
+                            dispersion.cutoff = c(0, Inf))
+  i <- RunPCA(i, 
+              features = VariableFeatures(i),
+              npcs = 50,
+              ndims.print = 1:10,
+              nfeatures.print = 10,
+              reduction.name = 'pca')
+  
+  Idents(i) <- i$Patient
+  i$ident <- NULL
+  
+  saveRDS(i, paste0(cohort, "_", subSet,".subset_norm.scale.50pc_20230922.rds"))
+  return(i)
+}
+
+CD8pr <- seurat.pipeline(CD8pr, "CD8.for.TRprediction", "CrOv.9pt")
+
+
+```
+
+
+# 20230925 STARTS HERE (to reproduce what was done on 20230922)
+```{r run Harmony on CD8pr}
+
+CD8pr <- readRDS("CrOv.9pt_CD8.for.TRprediction.subset_norm.scale.50pc_20230922.rds")
+
+runHar <- function(seu) {
+  RunHarmony(
+    object = seu,
+    group.by.vars = "Patient", # covariates to be removed, affected by theta & lambda below
+    reduction = "pca", # be careful!!! not "PCA" !!!!!!!
+    dims.use = 1:50, # default all PCs
+    theta = 2, # default; larger for more diverse clusters, 0 for no diversity
+    lambda = 1, # default; smaller results in more aggressive correction
+    sigma = 0.1, # default; larger results in cells assigned to more cluster
+    #nclust = NULL, # 1 = simple linear regression
+    #tau = 0, # expected number of cells per cluster, protection against Crerclustering small datasets with larger ones
+    block.size = 0.01, # default; larger -> faster but less accurate
+    max.iter.harmony = 10,
+    max.iter.cluster = 20,
+    epsilon.cluster = -Inf, # set to -Inf to never stop convergence early
+    epsilon.harmony = -Inf, # set to -Inf to never stop convergence early
+    plot_convergence = TRUE,
+    verbose = TRUE,
+    reference_values = NULL,
+    reduction.save = "Harmony",
+    assay.use = "RNA",
+    project.dim = T
+    )
+}
+
+CD8pr <- runHar(CD8pr)
+
+# Visualize intgHar
+visualHar <- function(seu, seuName) {
+  # Visualize Harmony-corrected PCA
+  pdf(paste0(seuName, "_CrOv.9pt_correctedPCs_color.by_patient_20230922.pdf"), width = 6, height = 4)
+  print(DimPlot(seu, 
+        dims = c(1, 2),
+        group.by = c("Patient"), # current active.ident
+        reduction = "Harmony")
+  )
+  dev.off()
+
+  pdf(paste0(seuName, "_CrOv.9pt_correctedPCs_split.by_patient_20230922.pdf"), width = 24, height = 4)
+  print(DimPlot(seu, 
+        dims = c(1, 2),
+        split.by = "Patient",
+        reduction = "Harmony")
+  )
+  dev.off()
+
+  # VizDimLoading plot
+  pdf(paste0(seuName, "_CrOv.9pt_topGenes_associated_with_50Harmonys_20230922.pdf"), width = 22, height = 50)
+  print(VizDimLoadings(seu, dims = 1:50, reduction = "Harmony", ncol = 5) + # patchwork object
+    plot_annotation(title = paste(seuName, "CrOv.9pt top genes associated with 50 Harmonys"))
+  )
+  dev.off()
+
+  # Heatmap of top 20 HVGs associated with the first 50 Harmonys/PCs
+  pdf(paste0(seuName, "_CrOv.9pt_heatmap_of_top20.HVGs_50Harmonys_20230922.pdf"), width = 14, height = 30)
+  print(DimHeatmap(seu, dims = 1:50, cells = 500, nfeatures = 20, ncol = 5,
+                   reduction = 'Harmony', assays = 'RNA', slot = 'scale.data',
+                   balanced = TRUE, combine = TRUE, fast = FALSE) +
+    plot_annotation(paste0(seuName, "_CrOv.9pt - heatmap of top 20 HVGs in 50 Harmonys"))
+  )
+  dev.off()
+
+  # Find the best numbers of harmony/ PCs
+  pdf(paste0(seuName, "_CrOv.9pt_ElbowPlot_20230922.pdf"))
+  print(ElbowPlot(seu, ndims = 50, reduction = "Harmony"))
+  dev.off()
+
+}
+
+visualHar(CD8pr, "intgHarCD8pr")
+
+```
+
+
+```{r ClustTree intgHarCD8pr}
+# 
+clustTree <- function(seu, pc, seuName) {
+# 20 PCs identified from Elbow plot, VizDimLoading & heatmap for Harmony and 50 PCs for non-integrated data
+for (k in c(20, 25, 30)) {
+  intgH <- FindNeighbors(seu, 
+                         reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                         dims = 1:pc, # as found by Elbow plot, heatmap & VizLoading
+                         k.param = k, # default 20, can also test 30
+                         annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+  )
+  intgH <- FindClusters(intgH, resolution = seq(0.1, 1.5, 0.1))
+  # Use clustree to look at clusterings at different resolution
+  pdf(paste0(seuName, "_CrOv.9pt_clustree.", pc, "pc.k", k, "_20230922.pdf"), width = 9, height = 16)
+  print(clustree(intgH, prefix = "RNA_snn_res."))
+  dev.off()
+  rm(intgH); invisible(gc()); gc()
+}
+}
+
+clustTree(CD8pr, 23, "intgHarCD8pr")
+
+```
+
+
+```{r Rerun to find neighbor and clusters with 23pc & 30k & 0.7 res, fig.width=6, fig.height=6}
+
+NeighborCluster <- function(har, harName, pc, k, res) {
+  Har <- FindNeighbors(har, 
+                       reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                       dims = 1:pc, # as found by Elbow plot
+                       k.param = k, # default 20, can also test 30
+                       annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                      )
+  Har <- FindClusters(Har, resolution = res)
+
+  ## Tabulate cells by cluster ID, replicate, or both
+  cellNumber <- c(table(Idents(Har)))
+  cell_proportion <- c(prop.table(table(Idents(Har))))
+  clustInfo <- data.frame(cellNumber, cell_proportion)
+  clustInfo <- rownames_to_column(clustInfo, var = "clusterID")
+  write.table(clustInfo, paste0(harName, "_CrOv.9pt_", pc, "pc.", k, "k", "_", res, "res_table_20230922.txt"),
+              append = F, quote = F, row.names = F, col.names = T, sep = "\t")
+
+  Har <- RunUMAP(Har,
+                 reduction = "Harmony",  
+                 dims = 1:pc,
+                 n.neighbors = k, #default 30, range 5-50, large n for preserved global structure while loss of detailed local structure, use same k as in FindNeighbors for consistent results!!! 
+                 min.dist = 0.2, #default 0.3, range 0.001-0.5, large dist for evenly distributed embedded points, small for optimizing accuracy of local structure
+                 spread = 1, 
+                 metric = "cosine", #default "cosine" to separate clusters better than "euclidean"
+                 seed.use = 1)
+
+  #saveRDS(Har, paste0(harName, "_CrOv.9pt_", pc, "pc.k", k, "_", res, "res_20230916.rds"))
+  return(Har)
+
+}
+
+CD8pr <- NeighborCluster(CD8pr, "intgHarCD8", 23, 30, 0.7)
+
+# Visualize UMAP
+pdf("intgHarCD8pr_CrOv.9pt_umap_20230922.pdf", width = 6, height = 6)
+print(DimPlot(CD8pr, reduction = "umap", label = T, repel = T, label.size = 6,
+        cols = distinctColorPalette(length(unique(Idents(CD8pr)))))
+)
+dev.off()
+
+saveRDS(CD8pr, "intgHarCD8pr_CrOv.9pt_23pc.30k_res0.7_20230922.rds")
+
+```
+
+
+```{r plot UMAPs with clusters and clones, fig.width=12, fig.height=12}
+
+UMAPs.with.cellLabels <- function(Har, harName, w, h) {
+  p1 <- DimPlot(CD8pr, reduction = "umap", label = T, repel = T, label.size = 6,
+        cols = distinctColorPalette(length(unique(Idents(CD8pr)))))
+
+  p2 <- DimPlot(CD8pr, reduction = "umap", group.by = "Monaco.fine",
+        cols = distinctColorPalette(length(unique(CD8pr$Monaco.fine)))) +
+    theme(legend.text = element_text(size = 7.5))
+  
+  p3 <- DimPlot(CD8pr, reduction = "umap", group.by = "blueprintEncode.fine",
+        cols = distinctColorPalette(length(unique(CD8pr$blueprintEncode.fine))))
+  
+  pdf(paste0(harName, "_CrOv.9pt_various.umaps_with_cluster.and.cell.labels_20230922.pdf"), width = w, height = h)
+  print(p1); print(p2); print(p3)
+  dev.off()
+}
+UMAPs.with.cellLabels(CD8pr, "intgHarCD8pr", 6, 6)
+
+
+UMAPs.with.clones <- function(Har, harName, w, h) {
+  # colored by subclusters
+  p0 <- DimPlot(Har, reduction = "umap", label = T, repel = T, label.size = 4,
+                cols = distinctColorPalette(length(unique(Idents(Har)))),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1)
+  p0
+
+  p3 <- DimPlot(Har, reduction = "umap", group.by = "annotated_reactivity",
+                cols = c("grey90", "royalblue", "red1"),
+                split.by = "Patient",
+                ncol = 3, pt.size = 1,
+                order = c("reactive", "nonreactive", "ND")
+  )
+  p3
+ 
+  p6 <- DimPlot(Har, reduction = "umap", group.by = "annotated_clone",
+                cols = c("grey90", distinctColorPalette(length(unique(Har$annotated_clone))-1)),
+                split.by = "Patient",
+                shape.by = "annotated_reactivity",
+                ncol = 3, pt.size = 1.5,
+                order = rev(levels(Har$annotated_clone))
+  ) +
+    scale_shape_manual(values = c(19, 4, 1)) +
+    theme(legend.text = element_text(size = 10)) +
+    guides(color = guide_legend(override.aes = list(size=4), ncol = 2),
+           shape = guide_legend(override.aes = list(size=4))) 
+  p6
+  
+  pdf(paste0(harName, "_CrOv.9pt_various.umaps_with_tumor.reactivity.TCRs_per.patient_20230922.pdf"), width = w, height = h)
+  print(p0); print(p3); print(p6)
+  dev.off()
+  
+}
+UMAPs.with.clones(CD8pr, "intgHarCD8pr", 14, 14)
+
+```
+
+
+# DE analysis for all clusters of CD8pr
+```{r Find cluster-specific markers for CD8pr, eval=FALSE}
+
+# For each cluster, find genes DE compared to all other clusters
+allMarkers <- function(har, seuName){
+  Markers <- FindAllMarkers(har, 
+                            only.pos = F, 
+                            min.pct = 0.1, 
+                            logfc.threshold = 0.25,   # 0.58496 = 1.5x, default=0.25
+                            min.cells.feature = 3,
+                            min.cells.group = 3,
+                            pseudocount.use = 0.1, # default=1
+                            return.thresh = 1, # p-value
+                            assay = 'RNA',
+                            slot = 'data',
+                            test.use = "LR" # best scDE method according to Libra package is LR
+                            )
+  sigMarkers <- Markers %>% filter(p_val_adj <= 0.05) %>% arrange(cluster, desc(avg_log2FC))
+  write.table(sigMarkers, 
+              paste0("intgHar", seuName, "_CrOv.9pt_DEmarkers_", "LR.test", "_lfc0.25_fdr5_20220922.txt"), 
+              append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+  
+  l <- list(sigMarkers, Markers)
+  names(l) <- c("FDR0.05", "allFDR")
+  return(l)
+}
+
+CD8pr.DE <- allMarkers(CD8pr, "CD8pr")
+
+```
+
+
+```{r volcano plot for NKT subset, include=TRUE, fig.width=14, fig.height=10}
+
+plotVolcano <- function(DE, harName, clusterName) {
+  pdf(paste0("intgHar", harName, "_CrOv.9pt_volcano.plots_of_DE.genes_lfc0.25_fdr5_LR.test_20230922.pdf"), width = 14, height = 10)
+  for (k in c(levels(clusterName))) {
+    res <- filter(DE, cluster == k)
+    #plot.new() # to have one plot per tab in html output - NOT working!
+    print(EnhancedVolcano(res,
+                          lab = res$gene,
+                          x = "avg_log2FC",
+                          y = "p_val_adj",
+                          title = paste(harName, "CrOv.9pt : markers of cluster ", k),
+                          subtitle = "",
+                          pCutoff = 0.01,
+                          FCcutoff = 0.5,
+                          pointSize = 1,
+                          labSize = 3.5,
+                          drawConnectors = TRUE,
+                          widthConnectors = 0.1,
+                          #typeConnectors = "open",
+                          arrowheads = FALSE,
+                          maxoverlapsConnectors = 30,
+                          legendLabels = c("NS", 
+                                           "0.25 < log2FC < 0.5", 
+                                           "0.01 < adj-pvalue < 0.05", 
+                                           "adj-pvalue < 0.01 & log2FC > 0.5"),
+                          col = c("grey30", "forestgreen", "royalblue", "red2"),
+                          )
+          )
+  }
+  dev.off()
+}
+
+plotVolcano(CD8pr.DE$allFDR, "CD8", CD8pr$seurat_clusters)
+
+```
+
+
+# Based on the above various UMAPs, volcanoPlots & DEG list, relabel the subclusters
+```{r relabel NKT clusters}
+
+# From DE, volcano plots & above UMAPs, relabel CD8pr clusters as follow
+CD8pr <- RenameIdents(CD8pr, '0' = 'naive/CM', '1' = 'EM', '2' = 'exhausted', '3' = 'cytotoxic', '4' = 'cycling', '5' = 'HSP', '6' = 'MAIT', '7' = 'NKlike/EMRA', '8' = 'CM')
+unique(Idents(CD8pr))
+
+pdf("intgHarCD8pr_CrOv.9pt_clusterLabels_20230922.pdf", width = 7, height = 6)
+DimPlot(CD8pr, reduction = "umap", #group.by = "newSubcluster",
+              cols = distinctColorPalette(length(unique(Idents(CD8pr)))),
+        label = T, repel = T
+        )
+dev.off()
+
+```
+# 20230922 STOPS HERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
