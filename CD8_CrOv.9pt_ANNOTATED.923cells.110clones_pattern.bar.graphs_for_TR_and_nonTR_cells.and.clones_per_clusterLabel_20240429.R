@@ -9,39 +9,41 @@ library(data.table)
 library(ggpattern)
 library(Seurat)
 
-
+# 
 # # Load table with all 5272 cells of cleaned CD8 & add cluster labels
-data = read.table("CD8_CrOv.9pt_all.5272cells_with_TRscores_by_8.signatures_and_cellWisePrediction_by_CrOv.signature_20240424.txt", sep = "\t", header = T)
-
-
+# data = read.table("CD8_CrOv.9pt_all.5272cells_with_TRscores_by_8.signatures_and_cellWisePrediction_by_CrOv.signature_20240424.txt", sep = "\t", header = T)
+# 
+# 
 # # Load CD8pr object
-CD8pr <- readRDS("./20230830_CrOv.9pt_full.pipeline/intgHarCD8pr_CrOv.9pt_23pc.30k_res0.7_20230922.rds")
-CD8pr <- RenameIdents(CD8pr, '0' = 'activatedRM', '1' = 'EM', '2' = 'exhausted', '3' = 'cytotoxic', '4' = 'cycling', '5' = 'HSP', '6' = 'MAIT', '7' = 'NKlike/EMRA', '8' = 'CM')
-
-CD8pr$cluster_label = Idents(CD8pr)
-
-meta = FetchData(CD8pr, vars = c("annotated_reactivity", "cluster_label")) %>%
-  rownames_to_column(var = "barcode") %>%
-  left_join(data) %>%
-  mutate(CancerType = ifelse(Patient %in% c("OvCa1637", "OvCa1682", "OvCa1809", "OvCa210"), "OV", "CR"))
-
-meta$cluster_label <- factor(meta$cluster_label,
-                             levels = c('activatedRM', 'EM', 'exhausted', 'cytotoxic', 'cycling', 'HSP', 'MAIT', 'NKlike/EMRA', 'CM'))
+# CD8pr <- readRDS("./20230830_CrOv.9pt_full.pipeline/intgHarCD8pr_CrOv.9pt_23pc.30k_res0.7_20230922.rds")
+# CD8pr <- RenameIdents(CD8pr, '0' = 'activatedRM', '1' = 'EM', '2' = 'exhausted', '3' = 'cytotoxic', '4' = 'cycling', '5' = 'HSP', '6' = 'MAIT', '7' = 'NKlike/EMRA', '8' = 'CM')
+# 
+# CD8pr$cluster_label = Idents(CD8pr)
+# 
+# meta = FetchData(CD8pr, vars = c("annotated_reactivity", "cluster_label")) %>%
+#   rownames_to_column(var = "barcode") %>%
+#   left_join(data) %>%
+#   mutate(CancerType = ifelse(Patient %in% c("OvCa1637", "OvCa1682", "OvCa1809", "OvCa210"), "OV", "CR"))
+# 
+# meta$cluster_label <- factor(meta$cluster_label,
+#                              levels = c('activatedRM', 'EM', 'exhausted', 'cytotoxic', 'cycling', 'HSP', 'MAIT', 'NKlike/EMRA', 'CM'))
 
 clusterColor <- c("#D2185C", "#E06DBB", "#FFC107", "#D8D274", "#517D36", "#49E8F1", "#318AD8",  "#917D87", "#7A43BF")
 
 
-write.table(meta, "CD8_CrOv.9pt_all.5272.cells_all.data_20240429.txt", sep = "\t", row.names = F)
+# write.table(meta, "CD8_CrOv.9pt_all.5272.cells_all.data_20240429.txt", sep = "\t", row.names = F)
 
 
-# Re-do UMAP with corrected cluster labels for CD8 seurat object
-pdf("CD8_CrOv.9pt_clusterLabels_20230429.pdf", width = 7, height = 6)
-print(DimPlot(CD8pr, reduction = "umap", #group.by = "newSubcluster",
-              #cols = distinctColorPalette(length(unique(Idents(CD8pr)))),
-              cols = clusterColor,
-              label = T, repel = T
-))
-dev.off()
+meta <- read.table("CD8_CrOv.9pt_all.5272.cells_all.data_20240429.txt", header = T)
+
+# # Re-do UMAP with corrected cluster labels for CD8 seurat object
+# pdf("CD8_CrOv.9pt_clusterLabels_20230429.pdf", width = 7, height = 6)
+# print(DimPlot(CD8pr, reduction = "umap", #group.by = "newSubcluster",
+#               #cols = distinctColorPalette(length(unique(Idents(CD8pr)))),
+#               cols = clusterColor,
+#               label = T, repel = T
+# ))
+# dev.off()
 
 
 # Subset CD8tr
@@ -59,9 +61,16 @@ CD8tr1 <- CD8tr %>% #filter(annotated_reactivity != "ND") %>%
   group_by(CancerType, cluster_label, .drop = F) %>% 
   mutate(proportion = cellNb/sum(cellNb))
 
+# CD8tr1b <- CD8tr %>% filter(annotated_reactivity != "ND") %>% 
+#   group_by(CancerType, cluster_label, annotated_reactivity, cloneID, .drop = F) %>% 
+#   summarise(cloneNb = n()) #%>%
+#ungroup() %>% 
+#group_by(cluster_label) %>% 
+#mutate(proportion = cellNb/sum(cellNb))
+
 
 # plot
-pdf("CD8_CrOv.9pt_distribution_of_TR.and.NTR.cells_per_cluster_20240429.pdf", width = 9, height = 4)
+pdf("CD8_CrOv.9pt_distribution_of_TR.and.NTR_cells_per_cluster_20240502.pdf", width = 9, height = 4)
 
 # cell number
 ggplot(CD8tr1, aes(x = cluster_label, y = cellNb, 
@@ -143,7 +152,7 @@ ggplot(CD8tr1, aes(x = cluster_label, y = proportion,
         axis.text.x = element_text(angle = -45, vjust = 0.5, hjust = 0.0, size = 12))
 
 dev.off()
-  
+
 
 # 2. Plot at CLONE per CancerType level
 CD8tr2 <- CD8tr %>% group_by(CancerType, annotated_reactivity, cloneID, cluster_label) %>% 

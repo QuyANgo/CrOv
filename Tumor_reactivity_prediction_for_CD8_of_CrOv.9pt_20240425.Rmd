@@ -1,7 +1,7 @@
 ---
 title: "Tumor_reactivity_prediction_CD8_CrOv.9pt_20240425"
 author: "Quy A. Ngo"
-date: "2024-04-27"
+date: "2024-05-02"
 output: html_document
 ---
 
@@ -17,6 +17,7 @@ setwd("C:/Users/Susan/Desktop/CrOv")
 ```{r load libraries}
 library(tidyverse)
 library(pROC)
+#library(ROCR)
 #library(yardstick)
 library(sqldf)
 library(gmodels)
@@ -95,76 +96,90 @@ zheng <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Zheng)
 lowery <- roc(CD8tr.max$annotated_reactivity, CD8tr.max$Lowery)
 
 
-# # 1b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
-# test12 <- roc.test(crov, trtpred)
-# test13 <- roc.test(crov, li)
-# #test14 <- roc.test(crov, vdleun)
-# test15 <- roc.test(crov, oliveira)
-# test16 <- roc.test(crov, hanada)
-# test17 <- roc.test(crov, chiffele)
-# test18 <- roc.test(crov, zheng)
-# test19 <- roc.test(crov, lowery)
-# 
+# 1b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
+test12 <- roc.test(crov, trtpred)
+test13 <- roc.test(crov, li)
+#test14 <- roc.test(crov, vdleun)
+test15 <- roc.test(crov, oliveira)
+test16 <- roc.test(crov, hanada)
+test17 <- roc.test(crov, chiffele)
+test18 <- roc.test(crov, zheng)
+test19 <- roc.test(crov, lowery)
 
-# # 1c. plot ROC_AUC curves
-# pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_max.CloneScores_20240424.pdf", width = 7.7, height = 5.3)
-# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
-#      main = "AUC of each signature using max clone scores",
-#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)")
-# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# 
-# legend("bottomright",
-#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
-#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
-#        lwd = 2, cex = 0.7
-# )
-# 
-# # add text for AUCs
-# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
-# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# 
-# #text(0.5, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
-# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# 
-# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.5, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.5, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# # add text for p.values of t-tests
-# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.3, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
-# text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# dev.off()
+
+# 1c. plot ROC_AUC curves
+pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_max.CloneScores_20240502.pdf", width = 6, height = 5.3)
+plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=FALSE,
+     main = "AUC of each signature using max clone scores",
+     xlab = "false positive rate (specificity)", ylab = "true positive rate (sensitivity)")
+plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+#plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+
+legend("bottomright",
+       legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+       col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+       lwd = 2, cex = 0.7
+)
+
+# add text for AUCs
+text(0.6, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+text(0.6, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.6, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+
+#text(0.6, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.6, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.6, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+
+text(0.6, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.6, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.6, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+# add text for p.values of t-tests
+text(0.4, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.4, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+#text(0.4, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.4, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.4, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+text(0.4, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.4, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.4, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+dev.off()
+
 
 # 1d. save results
 #for (i in c(crov, trtpred, li, oliveira, hanada, chiffele, zheng, lowery)) {
 saveROC <- function(rocObj, sigName) {
-  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
-  best <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
+  
+  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% 
+    mutate(Fscore = 2*(precision * recall) / (precision + recall)) %>% 
+    mutate(signature = sigName) %>%
+    select(signature, threshold:accuracy, precision:Fscore, tn:fnr) %>%
+    data.table::setnames("youden", "Gscore")
+  
+  bestF <- res %>% filter(!is.infinite(Fscore)) %>% slice_max(Fscore)
+
+  bestAUC <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% 
+    left_join(res) %>% 
+    select(signature, threshold:accuracy, precision, recall, Gscore, closest.topleft, Fscore, tn:fnr)
+
   ci <- pROC::ci(rocObj, of = "auc")
   names(ci) <- c("CI95%low", "AUC", "CI95%high")
   ci$signature <- sigName
   ci <- as.data.frame(ci) %>% select(signature, 1:3)
-  l <- list(res, best, ci)
-  names(l) <- c("result", "best", "ciAUC")
+  
+  l <- list(res, bestF, bestAUC, ci)
+  names(l) <- c("result", "bestF", "bestAUC", "ciAUC")
+
   return(l)
 }
 
@@ -178,29 +193,49 @@ l7 <- saveROC(chiffele, "Chiffelle")
 l8 <- saveROC(zheng, "Zheng")
 l9 <- saveROC(lowery, "Lowery")
 
-Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+
+# Combine all results for all signatures
+Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
-Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
 
-Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
-#CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
-
-# write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
-# write.table(Best, "CD8_CrOv.9pt_110annotatedTCRs_ROC.bestThreshold_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
-# write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_max.CloneScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# Get best F- or ROC.AUC/youden scores for all signatures
+BestF <- rbind(l1$bestF, l2$bestF, l3$bestF, l5$bestF, l6$bestF, l7$bestF, l8$bestF, l9$bestF)
+BestAUC <- rbind(l1$bestAUC, l2$bestAUC, l3$bestAUC, l5$bestAUC, l6$bestAUC, l7$bestAUC, l8$bestAUC, l9$bestAUC)
 
 
+# Get values of precision & recall for the top 2 signatures
+BestF2 <- rbind(l1$bestF, l2$bestF) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "F-score")
+BestAUC2 <- rbind(l1$bestAUC, l2$bestAUC) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "ROCAUC-score")
+
+Best2 <- rbind(BestF2, BestAUC2)
+
+
+# Get CI for AUC values
+CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+
+# Save all results
+write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_max.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestF, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.Fscore_of_8signatures_using_max.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestAUC, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.AUC_of_8signatures_using_max.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_max.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# Plot PR curves by max Clone Scores
 SigColor = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919")
 
 
-# plot PR curves by max Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_maxCloneScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_maxCloneScores_for_8.signatures_20240502.pdf", width = 6, height = 5.3)
+
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature)) +
+  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature, shape = score_type)) +
+  scale_shape_manual(values = c(2, 6)) +
   scale_color_manual(values = SigColor) +
-  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by max Clone Scores")
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by max Clone Scores") +
+  theme_classic()
+
 dev.off()
 
 
@@ -231,78 +266,92 @@ zheng <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Zheng)
 lowery <- roc(CD8tr.avg$annotated_reactivity, CD8tr.avg$Lowery)
 
 
-# # 2b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
-# test12 <- roc.test(crov, trtpred)
-# test13 <- roc.test(crov, li)
-# #test14 <- roc.test(crov, vdleun)
-# test15 <- roc.test(crov, oliveira)
-# test16 <- roc.test(crov, hanada)
-# test17 <- roc.test(crov, chiffele)
-# test18 <- roc.test(crov, zheng)
-# test19 <- roc.test(crov, lowery)
-# 
-# 
-# # 2c. plot
-# pdf("CD8_CrOv.9pt_110anotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_avg.CloneScores_20240424.pdf", width = 7.7, height = 5.3)
-# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
-#      main = "AUC of each signature using average Clone Scores",
-#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)")
-# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# 
-# legend("bottomright",
-#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
-#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
-#        lwd = 2, cex = 0.7
-# )
-# 
-# # add text for AUCs
-# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
-# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# 
-# #text(0.5, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
-# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# 
-# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.5, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.5, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# # add text for p.values of t-tests
-# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.3, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
-# text(0.3, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# dev.off()
+# 2b. t-tests for significant difference between reference signature (CrOv.9pt) and other signatures
+test12 <- roc.test(crov, trtpred)
+test13 <- roc.test(crov, li)
+#test14 <- roc.test(crov, vdleun)
+test15 <- roc.test(crov, oliveira)
+test16 <- roc.test(crov, hanada)
+test17 <- roc.test(crov, chiffele)
+test18 <- roc.test(crov, zheng)
+test19 <- roc.test(crov, lowery)
+
+
+# 2c. plot ROC_AUC curves
+pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_avg.CloneScores_20240502.pdf", width = 6, height = 5.3)
+plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=FALSE,
+     main = "AUC of each signature using average clone scores",
+     xlab = "false positive rate (specificity)", ylab = "true positive rate (sensitivity)")
+plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+#plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+
+legend("bottomright",
+       legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+       col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+       lwd = 2, cex = 0.7
+)
+
+# add text for AUCs
+text(0.6, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+text(0.6, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.6, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+
+#text(0.6, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.6, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.6, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+
+text(0.6, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.6, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.6, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+# add text for p.values of t-tests
+text(0.4, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.4, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+#text(0.4, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.4, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.4, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+text(0.4, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.4, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.4, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+dev.off()
+
 
 # 2d. save results
 #for (i in c(crov, trtpred, li, oliveira, hanada, chiffele, zheng, lowery)) {
-saveROC <- function(rocObj, sigName) {
-  res <- coords(rocObj, ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
-  best <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% mutate(signature = sigName)
-  ci <- pROC::ci(rocObj, of = "auc")
-  names(ci) <- c("CI95%low", "AUC", "CI95%high")
-  ci$signature <- sigName
-  ci <- as.data.frame(ci) %>% select(signature, 1:3)
-  l <- list(res, best, ci)
-  names(l) <- c("result", "best", "ciAUC")
-  return(l)
-}
+# saveROC <- function(rocObj, sigName) {
+#   
+#   res <- coords(rocObj, ret = "all", transpose = FALSE) %>% 
+#     mutate(Fscore = 2*(precision * recall) / (precision + recall)) %>% 
+#     mutate(signature = sigName) %>%
+#     select(signature, threshold:accuracy, precision:Fscore, tn:fnr) %>%
+#     data.table::setnames("youden", "Gscore")
+#   
+#   bestF <- res %>% filter(!is.infinite(Fscore)) %>% slice_max(Fscore)
+# 
+#   bestAUC <- coords(rocObj, "best", ret = "all", transpose = FALSE) %>% 
+#     left_join(res) %>% 
+#     select(signature, threshold:accuracy, precision, recall, Gscore, closest.topleft, Fscore, tn:fnr)
+# 
+#   ci <- pROC::ci(rocObj, of = "auc")
+#   names(ci) <- c("CI95%low", "AUC", "CI95%high")
+#   ci$signature <- sigName
+#   ci <- as.data.frame(ci) %>% select(signature, 1:3)
+#   
+#   l <- list(res, bestF, bestAUC, ci)
+#   names(l) <- c("result", "bestF", "bestAUC", "ciAUC")
+# 
+#   return(l)
+# }
 
 l1 <- saveROC(crov, "CrOv")
 l2 <- saveROC(trtpred, "TRTpred")
@@ -314,19 +363,49 @@ l7 <- saveROC(chiffele, "Chiffelle")
 l8 <- saveROC(zheng, "Zheng")
 l9 <- saveROC(lowery, "Lowery")
 
-Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+
+# Combine all results for all signatures
+Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
-Best <- rbind(l1$best, l2$best, l3$best, l5$best, l6$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
-Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
 
-# plot PR curves by average Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_avgCloneScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
+# Get best F- or ROC.AUC/youden scores for all signatures
+BestF <- rbind(l1$bestF, l2$bestF, l3$bestF, l5$bestF, l6$bestF, l7$bestF, l8$bestF, l9$bestF)
+BestAUC <- rbind(l1$bestAUC, l2$bestAUC, l3$bestAUC, l5$bestAUC, l6$bestAUC, l7$bestAUC, l8$bestAUC, l9$bestAUC)
+
+
+# Get values of precision & recall for the top 2 signatures
+BestF2 <- rbind(l1$bestF, l2$bestF) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "F-score")
+BestAUC2 <- rbind(l1$bestAUC, l2$bestAUC) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "ROCAUC-score")
+
+Best2 <- rbind(BestF2, BestAUC2)
+
+
+# Get CI for AUC values
+CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+
+# Save all results
+write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_avg.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestF, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.Fscore_of_8signatures_using_avg.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestAUC, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.AUC_of_8signatures_using_avg.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_avg.CloneScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# Plot PR curves by avg Clone Scores
+SigColor = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919")
+
+
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_avgCloneScores_for_8.signatures_20240502.pdf", width = 6, height = 5.3)
+
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature)) +
+  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature, shape = score_type)) +
+  scale_shape_manual(values = c(2, 6)) +
   scale_color_manual(values = SigColor) +
-  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by average Clone Scores")
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by average Clone Scores") +
+  theme_classic()
+
 dev.off()
 
 
@@ -357,99 +436,123 @@ chiffele <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Chiffelle)
 zheng <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Zheng)
 lowery <- roc(CD8tr.TRscores$annotated_reactivity, CD8tr.TRscores$Lowery)
 
-# # 3b. t-test of AUC between each pair of (CrOv.9pt signature vs. other signature)
-# test12 <- roc.test(crov, trtpred)
-# test13 <- roc.test(crov, li)
-# test14 <- roc.test(crov, oliveira)
-# test15 <- roc.test(crov, hanada)
-# #test16 <- roc.test(crov, vdleun)
-# test17 <- roc.test(crov, chiffele)
-# test18 <- roc.test(crov, lowery)
-# test19 <- roc.test(crov, zheng)
-# 
-# 
-# # 3c. plot
-# pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_CellScores_20240424.pdf", width = 7.7, height = 5.3)
-# plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=TRUE,
-#      main = "AUC of each signature using Cell Scores",
-#      xlab = "false positive rate (1-specificity)", ylab = "true positive rate (sensitivity)"
-# )
-# plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# #plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(lowery, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=TRUE, add=TRUE)
-# plot(zheng, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=TRUE, add=TRUE)
-# 
-# legend("bottomright",
-#        legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Lowery", "Zheng"),
-#        col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
-#        lwd = 2, cex = 0.7
-# )
-# 
-# # add text for AUC values
-# text(0.5, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
-# text(0.5, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.5, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# 
-# text(0.5, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.5, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
-# #text(0.5, 0.10, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# 
-# text(0.5, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.5, 0.05, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.5, 0.01, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# # add text for p.values of t-tests
-# text(0.3, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
-# text(0.3, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
-# #text(0.3, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
-# text(0.3, 0.20, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
-# text(0.3, 0.15, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
-# text(0.3, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
-# text(0.3, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
-# text(0.3, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
-# 
-# dev.off()
+# 3b. t-test of AUC between each pair of (CrOv.9pt signature vs. other signature)
+test12 <- roc.test(crov, trtpred)
+test13 <- roc.test(crov, li)
+#test14 <- roc.test(crov, vdleun)
+test15 <- roc.test(crov, oliveira)
+test16 <- roc.test(crov, hanada)
+test17 <- roc.test(crov, chiffele)
+test18 <- roc.test(crov, lowery)
+test19 <- roc.test(crov, zheng)
+
+
+pdf("CD8_CrOv.9pt_110annotatedTCRs_AUC_and_pval.ttest_of_8signatures_by_CellScores_20240502.pdf", width = 6, height = 5.3)
+plot(crov, print.auc=FALSE, col="#D2185C", lwd=2, legacy.axes=FALSE,
+     main = "AUC of each signature using cell scores",
+     xlab = "false positive rate (specificity)", ylab = "true positive rate (sensitivity)")
+plot(trtpred, print.auc=FALSE, col="#318AD8", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(li, print.auc=FALSE, col="#FFC107", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+#plot(vdleun, print.auc=FALSE, col="#026554", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(oliveira, print.auc=FALSE, col="#644092", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(hanada, print.auc=FALSE, col="#917D87", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+plot(chiffele, print.auc=FALSE, col="#517D36", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(zheng, print.auc=FALSE, col="#E06DBB", lwd=2, legacy.axes=FALSE, add=TRUE)
+plot(lowery, print.auc=FALSE, col="#ADA919", lwd=2, legacy.axes=FALSE, add=TRUE)
+
+
+legend("bottomright",
+       legend = c("CrOv", "TRTpred", "Li", "Oliveira", "Hanada", "Chiffelle", "Zheng", "Lowery"),
+       col = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919"),
+       lwd = 2, cex = 0.7
+)
+
+# add text for AUCs
+text(0.6, 0.35, paste("AUC :", round(crov$auc, 3)), adj = c(0, .5), col="#D2185C", cex = 0.7)
+text(0.6, 0.30, paste("AUC :", round(trtpred$auc, 3)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.6, 0.25, paste("AUC :", round(li$auc, 3)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+
+#text(0.6, 0.25, paste("AUC :", round(vdleun$auc, 3)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.6, 0.20, paste("AUC :", round(oliveira$auc, 3)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.6, 0.15, paste("AUC :", round(hanada$auc, 3)), adj = c(0, .5), col="#917D87", cex = 0.7)
+
+text(0.6, 0.10, paste("AUC :", round(chiffele$auc, 3)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.6, 0.05, paste("AUC :", round(zheng$auc, 3)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.6, 0.01, paste("AUC :", round(lowery$auc, 3)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+# add text for p.values of t-tests
+text(0.4, 0.30, paste("p.val =", format.pval(test12$p.value)), adj = c(0, .5), col="#318AD8", cex = 0.7)
+text(0.4, 0.25, paste("p.val =", format.pval(test13$p.value)), adj = c(0, .5), col="#FFC107", cex = 0.7)
+#text(0.4, 0.25, paste("p.val =", format.pval(test14$p.value)), adj = c(0, .5), col="#026554", cex = 0.7)
+text(0.4, 0.20, paste("p.val =", format.pval(test15$p.value)), adj = c(0, .5), col="#644092", cex = 0.7)
+text(0.4, 0.15, paste("p.val =", format.pval(test16$p.value)), adj = c(0, .5), col="#917D87", cex = 0.7)
+text(0.4, 0.10, paste("p.val =", format.pval(test17$p.value)), adj = c(0, .5), col="#517D36", cex = 0.7)
+text(0.4, 0.05, paste("p.val =", format.pval(test18$p.value)), adj = c(0, .5), col="#E06DBB", cex = 0.7)
+text(0.4, 0.01, paste("p.val =", format.pval(test19$p.value)), adj = c(0, .5), col="#ADA919", cex = 0.7)
+
+dev.off()
+
 
 # 3d. save results
 l1 <- saveROC(crov, "CrOv")
 l2 <- saveROC(trtpred, "TRTpred")
 l3 <- saveROC(li, "Li")
 
-l4 <- saveROC(oliveira, "Oliveira")
-l5 <- saveROC(hanada, "Hanada")
-#l6 <- saveROC(vdleun, "VanDerLeun")
+#l4 <- saveROC(vdleun, "VanDerLeun")
+l5 <- saveROC(oliveira, "Oliveira")
+l6 <- saveROC(hanada, "Hanada")
 
 l7 <- saveROC(chiffele, "Chiffelle")
 l8 <- saveROC(lowery, "Lowery")
 l9 <- saveROC(zheng, "Zheng")
 
-Res <- rbind(l1$result, l2$result, l3$result, l4$result, l5$result, l7$result, l8$result, l9$result) %>% select(signature, threshold:closest.topleft)
+
+# Combine all results for all signatures
+Res <- rbind(l1$result, l2$result, l3$result, l5$result, l6$result, l7$result, l8$result, l9$result)
 Res$signature <- factor(Res$signature, levels = signatureLevel)
 
-Best <- rbind(l1$best, l2$best, l3$best, l4$best, l5$best, l7$best, l8$best, l9$best) %>% select(signature, threshold:closest.topleft)
-Best2 <- rbind(l1$best, l2$best) %>% select(signature, precision, recall)
 
-# plot PR curves by average Clone Scores
-pdf("CD8_CrOv.9pt_precision.recall.curves_by_CellScores_for_8.signatures_20240427.pdf", width = 7, height = 5)
+# Get best F- or ROC.AUC/youden scores for all signatures
+BestF <- rbind(l1$bestF, l2$bestF, l3$bestF, l5$bestF, l6$bestF, l7$bestF, l8$bestF, l9$bestF)
+BestAUC <- rbind(l1$bestAUC, l2$bestAUC, l3$bestAUC, l5$bestAUC, l6$bestAUC, l7$bestAUC, l8$bestAUC, l9$bestAUC)
+
+
+# Get values of precision & recall for the top 2 signatures
+BestF2 <- rbind(l1$bestF, l2$bestF) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "F-score")
+BestAUC2 <- rbind(l1$bestAUC, l2$bestAUC) %>% select(signature, precision, recall, sensitivity, specificity) %>% mutate(score_type = "ROCAUC-score")
+
+Best2 <- rbind(BestF2, BestAUC2)
+
+
+# Get CI for AUC values
+CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l5$ciAUC, l6$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
+
+
+# Save all results
+write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_CellScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestF, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.Fscore_of_8signatures_using_CellScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(BestAUC, "CD8_CrOv.9pt_110annotatedTCRs_bestThreshold.for.AUC_of_8signatures_using_CellScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_CellScores_20240502.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+# Plot PR curves by avg Clone Scores
+SigColor = c("#D2185C", "#318AD8", "#FFC107", "#644092", "#917D87", "#517D36", "#E06DBB", "#ADA919")
+
+
+pdf("CD8_CrOv.9pt_precision.recall.curves_by_CellScores_for_8.signatures_20240502.pdf", width = 6, height = 5.3)
+
 ggplot(data = Res, aes(x = recall, y = precision, color = signature)) +
   geom_line() +
-  geom_point(data=Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature), shape=19, size=2) +
+  geom_point(data = Best2, inherit.aes = FALSE, aes(x=recall, y=precision, color=signature, shape = score_type)) +
+  scale_shape_manual(values = c(2, 6)) +
   scale_color_manual(values = SigColor) +
-  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by Cell Scores")
+  labs(x = "Recall", y = "Precision", title = "Precision-Recall Curve by Cell Scores") +
+  theme_classic()
+
 dev.off()
 
-
-# CI <- rbind(l1$ciAUC, l2$ciAUC, l3$ciAUC, l4$ciAUC, l5$ciAUC, l7$ciAUC, l8$ciAUC, l9$ciAUC)
-# 
-# write.table(Res, "CD8_CrOv.9pt_110annotatedTCRs_ROC.results_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
-# write.table(Best, "CD8_CrOv.9pt_110annotatedTCRs_ROC.bestThreshold_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
-# write.table(CI, "CD8_CrOv.9pt_110annotatedTCRs_AUC_with_CI95_of_8signatures_using_CellScores_20240424.txt", sep = "\t", quote = F, row.names = F, col.names = T)
 
 # manual pick for best thresholds of Cell Scores:
 #signature	threshold	specificity	sensitivity	accuracy	tn	tp	fn	fp	npv	ppv	fdr	fpr	tpr	tnr	fnr	1-specificity	1-sensitivity	1-accuracy	1-npv	1-ppv	precision	recall	youden	closest.topleft
@@ -457,7 +560,7 @@ dev.off()
 #CrOv	0.0733614942528736	0.795321637426901	0.916317991631799	0.826652221018418	544	219	20	140	0.964539007092199	0.610027855153203	0.389972144846797	0.204678362573099	0.916317991631799	0.795321637426901	0.0836820083682008	0.204678362573099	0.0836820083682008	0.173347778981582	0.0354609929078015	0.389972144846797	0.610027855153203	0.916317991631799	1.7116396290587	0.0488959106301408
 
 ```
-# 20240525 & 20240427 STOP HERE!!!
+# 20240525, 20240427 & 20240502 STOP HERE!!!
 
 
 
@@ -466,6 +569,8 @@ rm(l1,l2,l3,l4,l5,l6,l7,l8,l9, test12,test13,test14, test15, test16, test17, tes
    Best, CI, crov, trtpred, oliveira, hanada, li, chiffelle, zheng, lowery, TRTpred, signatureLevel)
 
 ```
+
+
 
 
 # C. Prediction for tumor reactivity of unannotated clones
@@ -781,7 +886,7 @@ PredProp$prediction <- factor(PredProp$prediction, levels = c("different_predict
 PredProp$scoreType <- factor(PredProp$scoreType, levels = c("clone score", "cell score"))
 
 # Stacked bar plots of commonly and differently predicted clones
-pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 5, height = 4.5)
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 5, height = 5.3.5)
 ggplot(PredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
   geom_bar(stat = "identity", position = "stack") +
   xlab("score method") + ylab("clone proportion") +
@@ -814,7 +919,7 @@ PPpredProp$prediction <- factor(PPpredProp$prediction, levels = c("different_pre
 PPpredProp$scoreType <- factor(PPpredProp$scoreType, levels = c("clone score", "cell score"))
 
 # Stack bar plot per patient
-pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_per.patient_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 10, height = 4.5)
+pdf("intgHarCD8_CrOv.9pt_stacked.bar.plot_per.patient_for_common_and_different_TRprediction_of_2399.UNANNOTATED.clones_by_CrOv.9pt_and_Li_signatures_20230927.pdf", width = 10, height = 5.3.5)
 ggplot(PPpredProp, aes(x = scoreType, y = cloneProportion, fill = prediction)) +
   geom_bar(stat = "identity", position = "stack") +
   facet_grid(~ Patient, switch = "x") +
