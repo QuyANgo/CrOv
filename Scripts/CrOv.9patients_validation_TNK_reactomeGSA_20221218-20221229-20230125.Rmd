@@ -1,0 +1,1139 @@
+---
+title: "CrOv.9patients - reactomeGSA for validation data - TNK - SB.BN - 20221218-20221229-20230125"
+author: "Quy A. Ngo"
+date: "25-Jan-2023"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", include = FALSE, echo = FALSE, message = FALSE, warning = FALSE)
+options(future.globals.maxSize = 48000 * 1024^2)
+setwd("/home/localadmin/Desktop/RESEARCH/SBobisse/Analysis/CrOv_TCR.GEX/20230125_reactomeGSA")
+`%nin%` <- Negate(`%in%`)
+```
+
+
+```{r load libraries}
+library(Seurat)
+#library(harmony)
+library(ReactomeGSA)
+# library(ReactomeGSA.data)
+# data(jerby_b_cells)
+
+library(Matrix)
+# library(scater)
+# library(scran)
+# library(clustree)
+# library(celldex)
+library(future)
+
+library(tidyverse)
+library(stringr)
+library(rstatix)
+library(ggpubr)
+library(cowplot)
+library(patchwork)
+library(EnhancedVolcano)
+library(scales)
+library(ggVennDiagram)
+library(plotly)
+library(RColorBrewer)
+library(randomcoloR)
+
+library(knitr)
+library(kableExtra)
+library(reactable)
+
+# library(GeneOverlap)
+# library(readxl)
+# library(qpdf)
+#library(foreach)
+```
+
+
+### SUBSET of TESTED TCR CELLS from intgHar with T identities from Monaco main categories
+```{r subset mergedData with T cell clusters identified from canonical lymphoid marker expression above}
+
+intgHar <- readRDS("../20221206_Harmony_TNK1.2_validation/CrOv.9patients_intgHar.subcluster0_Monaco-BlueprintENCODE.labels_20221206.rds")
+TNKa <- subset(intgHar,
+               subset = Monaco.main %in% c("T cells", "CD4+ T cells", "CD8+ T cells", "NK cells")
+              )
+TNKb <- subset(intgHar,
+               subset = Monaco.main %nin% c("T cells", "CD4+ T cells", "CD8+ T cells", "NK cells") &
+                        annotated_reactivity %in% c("reactive", "nonreactive")
+               )
+
+TNK <- merge(TNKa, TNKb)
+TNK <- DietSeurat(TNK)
+
+# sort cloneID
+cloneID.ord <- str_sort(c(unique(TNK$cloneID)), numeric = T)
+cloneID.ord <- cloneID.ord[c(51:85, 1:50, 98:132, 87:97, 86)]
+TNK$cloneID <- factor(TNK$cloneID, levels = cloneID.ord)
+
+# add topScore clones to MetaData
+topscore <- c("CrCm4_TCR_H1", "CrCm4_TCR_H6", "CrCm4_TCR_H9", "CrCm4_TCR1", "CrCm4_TCR2",
+              "CrCm6_TCR_H1", "CrCm6_TCR_H2", "CrCm6_TCR_H5", "CrCm6_TCR7", "CrCm6_TCR4",
+              "OvCa1682_TCR_H1", "OvCa1682_TCR_H7", "OvCa1682_TCR2", "OvCa1682_TCR4", "OvCa1682_TCR3", "OvCa1682_TCR6", "OvCa1682_TCR7")
+topClone <- FetchData(TNK, vars = c("cloneID"))
+
+topClone <- topClone %>% 
+  mutate(topTRscore_clone = ifelse(cloneID %nin% topscore, "others", as.character(cloneID))) %>% 
+  select(topTRscore_clone)
+topClone$topTRscore_clone <- factor(topClone$topTRscore_clone, levels = c(topscore, "others"))
+
+TNK <- AddMetaData(TNK, topClone)
+
+saveRDS(TNK, "TNKsubset_20221218.rds")
+
+rm(intgHar, TNKa, TNKb, cloneID.ord, topClone, topscore); invisible(gc()); gc()
+
+```
+
+
+# -----------------------------------------------------------------
+# -----------------------------------------------------------------
+# 2) Analysis of TNK subset
+```{r TNK subset analysis, eval=FALSE}
+
+# Apply pipeline
+# normalize
+TNK <- as.SingleCellExperiment(TNK)
+cl100 = scran::quickCluster(TNK, min.size = 100) # can change this default min.size
+TNK = scran::computeSumFactors(TNK, cluster = cl100)
+TNK = scater::logNormCounts(TNK,
+                            log = T,
+                            transform = "log",
+                            pseudo_count = 1)
+TNK <- as.Seurat(TNK, counts = "counts", data = "logcounts")
+TNK <- SetIdent(TNK, value = "orig.ident")
+
+# QC of normalized merged Data
+pdf('TNK_UMIcounts_before&after_normalization_20221218.pdf',
+    width = 10, height = 7)
+  par(mfrow = c(1,2))
+
+  hist(colSums(TNK@assays$RNA@counts),
+       breaks = 100,
+       col = 'wheat',
+       main = paste0("TNK", " before normalization"),
+       xlab = "Sum of expression")
+
+  hist(colSums(TNK@assays$RNA@data),
+       breaks = 100,
+       col = 'wheat',
+       main = paste0("TNK", " after normalization"),
+       xlab = "Sum of expression")
+
+dev.off()
+
+#saveRDS(TNK, "TNK_norm_20221218.rds")
+
+# scale & regress
+TNK <- ScaleData(TNK, 
+                 features = rownames(TNK),
+                 vars.to.regress = c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "patient"))
+
+# Find HVGs using default parameters
+TNK <- FindVariableFeatures(TNK,
+                             selection.method = "vst",
+                             nfeatures = 2000,
+                             mean.function = ExpMean,
+                             dispersion.function = LogVMR,
+                             num.bin = 40,
+                             binning.method = "equal_width", # "equal_frequency"
+                             mean.cutoff = c(0.1, 8), #c(0.0125, 4),
+                             dispersion.cutoff = c(0.5, Inf)) #c(0, Inf)) # c(0, 0.4)
+
+# Dimensional reduction with PCA, use 100pc
+TNK <- RunPCA(TNK,
+               features = VariableFeatures(TNK),
+               npcs = 100,
+               ndims.print = 1:10,
+               nfeatures.print = 10,
+               reduction.key = 'PC_',
+               reduction.name = 'PCA')
+
+saveRDS(TNK, "TNK.norm_scale.regress.hvg.100pc_20221218.rds")
+
+```
+
+
+### Harmony correction
+```{r run Harmony on TNK with PCA, eval=FALSE}
+
+#TNK <- readRDS("TNK.norm_scale.regress.hvg.100pc_20221218.rds")
+intgHarTNK <- RunHarmony(
+  object = TNK,
+  group.by.vars = c("patient"), # covariates to be removed, affected by theta & lambda below
+  reduction = "PCA",
+  dims.use = 1:100, # default all PCs
+  theta = 2, # default; larger for more diverse clusters, 0 for no diversity
+  lambda = 1, # default; smaller results in more aggressive correction
+  sigma = 0.1, # default; larger results in cells assigned to more cluster
+  #nclust = NULL, # 1 = simple linear regression
+  #tau = 0, # expected number of cells per cluster, protection against overclustering small datasets with larger ones
+  block.size = 0.05, # default; larger -> faster but less accurate
+  max.iter.harmony = 10,
+  max.iter.cluster = 20,
+  epsilon.cluster = -Inf, # set to -Inf to never stop convergence early
+  epsilon.harmony = -Inf, # set to -Inf to never stop convergence early
+  plot_convergence = TRUE,
+  verbose = TRUE,
+  reference_values = NULL,
+  reduction.save = "Harmony",
+  assay.use = "RNA",
+  project.dim = TRUE
+)
+
+intgHarTNK$ident <- NULL
+
+# VizDimLoading plot
+pdf("intgHarTNK_topGenes_associated_with_50Harmonys_20221218.pdf", width = 22, height = 50)
+VizDimLoadings(intgHarTNK, dims = 1:50, reduction = "Harmony", ncol = 5) + # patchwork object
+  plot_annotation(title = "intgHarTNK top genes associated with 50 Harmonys")
+dev.off()
+
+# Heatmap of top 20 HVGs associated with the first 50 Harmonys
+pdf("intgHarTNK_heatmap_of_top20.HVGs_50Harmonys_20221218.pdf", width = 14, height = 30)
+DimHeatmap(intgHarTNK, dims = 1:50, cells = 500, nfeatures = 20, ncol = 5,
+           reduction = 'Harmony', assays = 'RNA', slot = 'scale.data',
+           balanced = TRUE, combine = TRUE, fast = FALSE) +
+  plot_annotation("intgHarTNK - heatmap of top 20 HVGs in 50 Harmonys")
+dev.off()
+
+# Find the best numbers of harmony PCs
+pdf("intgHarTNK_ElbowPlot_20221218.pdf")
+ElbowPlot(intgHarTNK, ndims = 100, reduction = "Harmony")
+dev.off()
+
+saveRDS(intgHarTNK, "intgHarTNK_20221218.rds")
+rm(TNK); invisible(gc); gc()
+
+```
+
+
+```{r TNK - Find optimal neighbors with mHarmony, then find optimal clusters, include=FALSE, eval=FALSE}
+
+# From Elbow plots, find optimal pc and k then FindClusters with res 0.1 - 2.5
+#intgHarTNK <- readRDS("intgHarTNK_20221218.rds")
+for (i in c(33)) {
+  for (k in c(20, 25, 30)) {
+    TNK <- FindNeighbors(intgHarTNK, 
+                          reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                          dims = 1:i, # as found by Elbow plot
+                          k.param = k, # default 20, can also test 30
+                          annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                         )
+    TNK <- FindClusters(TNK, resolution = seq(0.1, 2, 0.1))
+    # Use clustree to look at clusterings at different resolution
+    pdf(paste0("intgHarTNK_clustree.", i,"pca.k", k, "_20221218.pdf"), width = 9, height = 16)
+    print(clustree(TNK, prefix = "RNA_snn_res."))
+    dev.off()
+    rm(TNK); invisible(gc()); gc()
+  }
+}
+
+```
+
+
+# AFTERNOON 20221218 STARTS HERE!!!
+```{r function to find optimal umap, eval=FALSE}
+intgHarTNK <- readRDS("intgHarTNK_20221218.rds")
+
+# From above results, check umap clusters & feature plots with stable resolutions of selected pc, k & res
+lineage <- c("CD4", "CD8A", "KIR2DL4", "CD79B", "C1QA", "CD1C")
+state <- c("TRDC", "TRAV1-2", "ZNF683", "FGFBP2", "CXCL13", "HAVCR2")
+
+optimUmap.pc.k.res <- function(pc, k, res) {
+  TNK <- FindNeighbors(intgHarTNK, 
+                        reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                        dims = 1:pc, # as found by Elbow plot
+                        k.param = k, # default 20, can also test 30
+                        annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                        )
+  
+  TNK <- FindClusters(TNK, resolution = res)
+  cluster_colors <- distinctColorPalette(length(unique(TNK$seurat_clusters)))
+
+  TNK <- RunUMAP(TNK,
+                  reduction = "Harmony",  
+                  dims = 1:pc,
+                  n.neighbors = k, #default 30, range 5-50, large n for preserved global structure while loss of detailed local structure, use same k as in FindNeighbors for consistent results!!! 
+                  min.dist = 0.2, #default 0.3, range 0.001-0.5, large dist for evenly distributed embedded points, small for optimizing accuracy of local structure
+                  metric = "cosine", #default "cosine" to separate clusters better than "euclidean"
+                  seed.use = 1
+                  )
+  #TNK$ident <- NULL
+  pdf(paste0("intgHarTNK_umap.checking_", "33pc.", k,"k_", res,"res_20221218.pdf"), width = 20, height = 6.5)
+  p1 <- DimPlot(TNK, reduction = "umap", group.by = "seurat_clusters",
+                label = T, repel = F, label.size = 4,
+                cols = cluster_colors) +
+          plot_annotation(title = paste0("intgHarTNK_", pc,"pc.", k,"k_", res,"res"),
+                          theme = theme(plot.title = element_text(size = 24))
+                         ) 
+  p2 <- DimPlot(TNK, reduction = "umap", group.by = "annotated_reactivity",
+                label = F, label.size = 4, pt.size = 0.3,
+                order = c("reactive", "nonreactive", "ND"), 
+                cols = c("grey90", "cornflowerblue", "brown1")
+                )
+  p3 <- DimPlot(TNK, reduction = "umap", group.by = "validation_status",
+                label = F, label.size = 4, pt.size = 0.3,
+                order = c("TP", "FP", "TN", "ND"), 
+                cols = c("grey90", "cornflowerblue", "orange", "brown1")
+                )
+  print(p1 + p2 + p3)
+
+  print(FeaturePlot(TNK,
+                    features = c(lineage, state),
+                    reduction = "umap", slot = "data",
+                    cols = rev(brewer.pal(11, "Spectral")),
+                    label = TRUE, repel = FALSE, label.size = 3, label.color = "grey80",
+                    order = TRUE, by.col = TRUE, combine = T, ncol = 6
+                    ) +
+    plot_annotation(title = paste0("intgHarTNK_featurePlots_lineage.&.cellstate_",
+                                         pc,"pc.", k,"k_", res,"res"),
+                          theme = theme(plot.title = element_text(size = 24))
+                   )
+       )
+
+  dev.off()
+  rm(TNK); invisible(gc()); gc()
+}
+
+optimUmap.pc.k.res(33, 20, 1.3)
+optimUmap.pc.k.res(33, 25, 1.6)
+optimUmap.pc.k.res(33, 30, 1.3) # choose this
+
+```
+
+
+```{r Re-find neighbors & clusters with selected pc, k, optimal res & dist, then umap, include=FALSE}
+
+#intgHarTNK <- readRDS("intgHarTNK_20221218.rds")
+
+# From Elbow plot & above tests, select 33pc and k30 with 1.3res & subcluster
+intgHarTNK <- FindNeighbors(intgHarTNK,
+                             reduction = "Harmony", # VERY IMPORTANT: "Harmony" !!!!
+                             dims = 1:33, # as found by Elbow plot
+                             k.param = 30, # default 20, can also test 30
+                             annoy.metric = "euclidean" # default "euclidean"; can also test "cosine"
+                             )
+intgHarTNK <- FindClusters(intgHarTNK, resolution = 1.3)
+
+# From pilot umaps, subcluster 7, 8 & 9 to separate NK & Tex cells
+intgHarTNK <- FindSubCluster(intgHarTNK, "7", graph.name = "RNA_snn", subcluster.name = "subcluster7.TNK", resolution = 0.3, algorithm = 1)
+intgHarTNK <- FindSubCluster(intgHarTNK, "8", graph.name = "RNA_snn", subcluster.name = "subcluster8.TNK", resolution = 0.3, algorithm = 1)
+intgHarTNK <- FindSubCluster(intgHarTNK, "9", graph.name = "RNA_snn", subcluster.name = "subcluster9.TNK", resolution = 0.3, algorithm = 1)
+
+# Combine 3 subcluster names
+scl <- FetchData(intgHarTNK, vars = c("subcluster7.TNK", "subcluster8.TNK", "subcluster9.TNK"))
+sub7 <- scl %>% filter(subcluster7.TNK %in% c("7_0", "7_1")) %>% select(subcluster7.TNK) %>% rename(subcluster.TNK = subcluster7.TNK) %>% rownames_to_column(var = "cellID")
+sub8 <- scl %>% filter(subcluster8.TNK %in% c("8_0", "8_1")) %>% select(subcluster8.TNK) %>% rename(subcluster.TNK = subcluster8.TNK) %>% rownames_to_column(var = "cellID")
+sub9 <- scl %>% filter(subcluster9.TNK %in% c("9_0", "9_1")) %>% select(subcluster9.TNK) %>% rename(subcluster.TNK = subcluster9.TNK) %>% rownames_to_column(var = "cellID")
+
+rem <- FetchData(intgHarTNK, vars = "seurat_clusters") %>% filter(seurat_clusters %nin% c("7", "8", "9")) %>% rename(subcluster.TNK = seurat_clusters) %>% rownames_to_column(var = "cellID")
+
+metdat <- rbind(sub7, sub8, sub9, rem)
+
+# change NA in Monaco & Encode labels to "unknown"
+relabel <- FetchData(intgHarTNK, vars = c("Monaco.main", "blueprintEncode.main", "Monaco.fine", "blueprintEncode.fine")) %>% replace(is.na(.), "unknown") %>% rownames_to_column(var = "cellID")
+
+# add subclusters & re-labels to meta data
+meta <- scl %>% rownames_to_column(var = "cellID") %>% 
+  left_join(metdat, by = "cellID") %>% #to keep cellID order as in seurat object
+  select(cellID, subcluster.TNK) %>% 
+  left_join(relabel) %>% 
+  column_to_rownames(var = "cellID")
+
+meta$subcluster.TNK <- factor(meta$subcluster.TNK, levels = str_sort(c(unique(meta$subcluster.TNK)), numeric = T))
+intgHarTNK <- AddMetaData(intgHarTNK, meta)
+
+# change Idents to subcluster.TNK
+Idents(intgHarTNK) <- intgHarTNK$subcluster.TNK
+
+# Tabulate cells by subcluster.TNK & re-labels
+for (i in c("subcluster.TNK", "Monaco.main", "blueprintEncode.main", "Monaco.fine", "blueprintEncode.fine")) {
+  cellNumber <- c(table(intgHarTNK[[i]]))
+  cell_proportion <- c(prop.table(table(intgHarTNK[[i]])))
+  clustInfo <- data.frame(cellNumber, cell_proportion)
+  clustInfo <- rownames_to_column(clustInfo, var = i)
+  write.table(clustInfo, paste0("CrOv.9patients_validation_intgHarTNK_table_", i, "_20221218.txt"),
+              append = F, quote = F, row.names = F, col.names = T, sep = "\t")
+}
+
+intgHarTNK <- RunUMAP(intgHarTNK,
+                       reduction = "Harmony",  
+                       dims = 1:33,
+                       n.neighbors = 30, #default 30, range 5-50, large n for preserved global structure while loss of detailed local structure, use same k as in FindNeighbors for consistent results!!! 
+                       min.dist = 0.2, #default 0.3, range 0.001-0.5, large dist for evenly distributed embedded points, small for optimizing accuracy of local structure
+                       spread = 1, 
+                       metric = "cosine", #default "cosine" to separate clusters better than "euclidean"
+                       seed.use = 1)
+
+# save results
+saveRDS(intgHarTNK, "intgHarTNK_subclusters7.8.9_33pc.k30_1.3res_umap_20221218.rds")
+
+rm(i, relabel, clustInfo, cell_proportion, cellNumber, meta, metdat, rem, scl, sub7, sub8, sub9, cl100); invisible(gc()); gc()
+```
+
+
+### Highlighted cells in TNK umap with tumor-reactivity status & TCR presence :
+```{r Visualize intgHarTNK data on umap, include=TRUE, fig.width=18, fig.height=6}
+
+#cluster_colors_TNK <- distinctColorPalette(length(unique(intgHarTNK$subcluster.TNK)))
+cluster_colors_TNK <- c("#D6E5A5", "#E554A2", "#DFB699", "#D4BDDF", "#71A0D6", "#D88BDC",
+                        "#77A464", "#DBBA57", "#7EC7D6", #7_0, 7_1
+                        "#DD90AD", "#B0E8E8", "#8638E3", "#DAE957", #9_0, 9_1
+                        "#8F7A6F", "#E28E60", "#78E4CD", "#7DE84D", #13
+                        "#7E66B4", "#7F82E9", "#8BEA95", "#DB4E5E", "#DCE4DC", "#D851DB")
+topClone_colors <- c("grey90", 
+                     "mediumblue","lightseagreen","deepskyblue","gold","gold3","orangered","darkgoldenrod1",
+                     "slateblue1","orange","purple3","brown1","darkred", 
+                     "chartreuse3","palegreen4", "indianred1","magenta","deeppink4")
+
+#Encode.main.colors <- c("#8CEA4C", "#B749DC", "#DDC7D4", "#9B8ADD", "#D48B6A", "#79B3D0", "#E073AF", "#8EDD8A", "#DFD359", "#82E0CF", "#D3D8AA")
+#Encode.main.types <- c()
+#Monaco.fine.colors <- distinctColorPalette(length(unique(intgHarTNK$Monaco.fine)))
+#Encode.fine.colors <- distinctColorPalette(length(unique(intgHarTNK$blueprintEncode.fine)))
+
+p0 <- DimPlot(intgHarTNK, reduction = "umap", group.by = "subcluster.TNK",
+              label = T, repel = F, label.size = 5,
+              cols = cluster_colors_TNK)
+p1 <- DimPlot(intgHarTNK, reduction = "umap", group.by = "Monaco.main",
+              order = c("unknown", "Dendritic cells", "Monocytes", "B cells", "CD4+ T cells", "CD8+ T cells", "T cells", "NK cells"),
+              label = F, #repel = F, label.size = 5,
+              cols = c("#77A464", "khaki1", "#D4BDDF", "lightskyblue1", "red", "#71A0D6", "orange", "#E554A2"))
+p2 <- DimPlot(intgHarTNK, reduction = "umap", group.by = "blueprintEncode.main",
+              order = c("unknown", "Adipocytes", "Epithelial cells", "HSC", "Macrophages", "DC", "Monocytes", "B-cells", "CD4+ T-cells", "CD8+ T-cells", "NK cells"),
+              label = F, #repel = F, label.size = 4,
+              cols = c("#77A464", "#D4BDDF", "lightskyblue1", "red", "#71A0D6", "orange", "#7DE84D", "#DBBA57", "#78E4CD", "#DAE957", "#E554A2"))
+p0 + p1 + p2
+p3 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "annotated_reactivity", order = c("reactive", "nonreactive", "ND"), pt.size = 0.2,
+              cols = c("grey90", "cornflowerblue", "brown1"))
+p4 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "validation_status", pt.size = 0.5,
+              order = c("TP", "FP", "TN", "ND"), 
+              cols = c("grey90", "cornflowerblue", "orange", "brown1"))
+p5 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "topTRscore_clone", pt.size = 0.5,
+              order = levels(intgHarTNK$topTRscore_clone), 
+              cols = topClone_colors)
+p3 + p4 + p5
+p6 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "TCR_presence",
+              order = c("yes", "no"),
+              cols = c("grey90", "orange"))
+p7 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "Phase", order = c("S", "G2M", "G1"),
+              cols = c("tomato", "blue", "lightgreen"))
+p8 <- DimPlot(intgHarTNK, reduction = "umap", label = F,
+              group.by = "cancer_type", order = c("CrM", "CrP", "Ov"),
+              cols = c("tomato", "blue", "lightgreen"))
+p6 + p7 + p8
+
+pdf("CrOv.9patients_validation_intgHarTNK_various.umaps_20221218.pdf", width = 24, height = 8)
+print(p0+p1+p2); print(p3+p4+p5); print(p6+p7+p8)
+dev.off()
+
+```
+
+
+```{r reactivity subset}
+# factorize
+intgHarTNK$TCR_presence <- factor(intgHarTNK$TCR_presence, levels = c("yes", "no"))
+intgHarTNK$annotated_reactivity <- factor(intgHarTNK$annotated_reactivity, levels = c("reactive", "nonreactive", "ND"))
+intgHarTNK$validation_status <- factor(intgHarTNK$validation_status, levels = c("TP", "FP", "TN", "ND"))
+intgHarTNK$cancer_type <- factor(intgHarTNK$cancer_type, levels = c("CrP", "CrM", "Ov"))
+intgHarTNK$Phase <- factor(intgHarTNK$Phase, levels = c("G1", "S", "G2M"))
+intgHarTNK$patient <- factor(intgHarTNK$patient, levels = c("CrCp4","CrCp5","CrCp7", "CrCm4","CrCm6", "OvCa1637", "OvCa1682", "OvCa1809", "OvCa210" ))
+saveRDS(intgHarTNK, "intgHarTNK_subclusters7.8.9_factorized_33pc.k30_1.3res_umap_20221218.rds")
+
+reactivity <- FetchData(intgHarTNK, 
+                        vars = c("cloneID", "subcluster.TNK", 
+                                 "annotated_reactivity", "validation_status", "topTRscore_clone",
+                                 "Phase", "Monaco.main", "blueprintEncode.main", "Monaco.fine", "blueprintEncode.fine",
+                                 "CD4", "CD8A", "CD8B", "TRDC", "TRGV9", "CCL5", "KIR2DL4", "CD79B", "C1QA", "CD1C",
+                                 "FOXP3", "TRAV1-2", "ZNF683", "FGFBP2", "CXCL13", "HAVCR2", "TNF")) %>% 
+  filter(annotated_reactivity %in% c("reactive", "nonreactive")) %>% 
+  mutate(cloneID = factor(cloneID, levels = c(levels(intgHarTNK$cloneID)))) %>% 
+  mutate(subcluster.TNK = factor(subcluster.TNK, levels = str_sort(c(unique(reactivity$subcluster.TNK)), numeric = T))) %>% 
+  arrange(cloneID, desc(annotated_reactivity), subcluster.TNK)
+
+```
+
+
+
+# ------------------------------------------------------
+## 2c) Number of knownTCR-cells per cluster in TNK subset
+```{r table of TCR proportion per cluster, include=TRUE, fig.width=16, fig.height=10}
+
+cluster_TCR <- as.data.frame(table(intgHarTNK$subcluster.TNK, intgHarTNK$TCR_presence))
+names(cluster_TCR) <- c("cluster", "TCRpresence", "cellNumber")
+cluster_TCR <- cluster_TCR %>% group_by(cluster) %>% 
+  mutate(cellProportion = ifelse(TCRpresence == "yes", round(100*cellNumber/sum(cellNumber), 1), ""))
+
+pdf("CrOv.9patients_validation_TNK.subcluster_cell.number.proportion_per.subcluster_20221218.pdf",
+    width = 16, height = 10)  
+ggplot(cluster_TCR, aes(x = cluster, y = cellNumber, fill = TCRpresence)) +
+  geom_col(position = "stack") + # geom_col does NOT use stat as geom_bar
+  ggtitle("Number and proportion of knownTCR-cells per cluster in TNKsubset") +
+  theme_classic() +
+  scale_fill_manual(values = c("wheat", "grey80")) +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0.03,0), breaks = c(0, 200, 500, 1000, 2000, 3000, 4000, 5000, 6000, 7000)) +
+  ylab("Total cell number with knownTCR-cell proportion outside bar") +
+  geom_text(aes(label = cellProportion), size = 6, hjust = 0, vjust = 0.5, position = "stack") +
+  theme(axis.text = element_text(size = 18),
+        plot.title = element_text(size = 24, face = "bold"),
+        axis.title = element_text(size = 18, face = "bold"),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "blue", size = 0.5, linetype = "dotted"), 
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 16)
+        ) +
+  coord_flip()
+dev.off()
+
+```
+
+
+# UMAP with cluster distribution by patients
+```{r umap - cluster per patient, include=TRUE, fig.width=15, fig.height=13}
+
+p11 <- DimPlot(intgHarTNK, reduction = "umap", label = T, repel = F, label.size = 3,
+               group.by = "subcluster.TNK", split.by = "patient", ncol = 3, pt.size = 0.1,
+               cols = cluster_colors_TNK) +
+    plot_annotation("Distribution of clusters per patient",
+                    theme = theme(plot.title = element_text(size = 24))
+  )
+p11
+
+pdf("CrOv.9patients_validation_TNK.subcluster_umap_cluster.distribution_per.patient_20221218.pdf", width = 15, height = 13)
+print(p11)
+dev.off()
+
+```
+
+# -------------------------------------------------------
+## Cell number & proportion per cluster per patient
+```{r table of cluster distribution per patient, include=TRUE, fig.width=15, fig.height=10}
+
+cluster_patient <- as.data.frame(table(Idents(intgHarTNK), intgHarTNK$patient))
+names(cluster_patient) <- c("cluster", "patient", "cellNumber")
+cluster_patient <- cluster_patient %>% group_by(cluster) %>% 
+  mutate(cellProportion = round(100*cellNumber/sum(cellNumber), 1))
+
+#patient_colors <- distinctColorPalette(length(unique(intgHarTNK$patient)))
+patient_colors <- c("#B74FD7", "#86DCAF", "#DBC66B", "#D77680", "#B490D6", "#8ABDD8", "#9BE55E", "#DAD6C8", "#EFEA11")
+
+p12 <- ggplot(cluster_patient, aes(x=cluster, y=cellNumber, fill=patient)) +
+  geom_col(position = "stack") + # geom_col does NOT use stat as geom_bar
+  ggtitle("Cell number of each cluster per patient") +
+  theme_classic() +
+  scale_fill_manual(values = patient_colors) +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0,0), 
+                     #breaks = c(0, 100, 500, 1000, 2000, 3000, 4000, 5000)
+  ) +
+  ylab("Total cell number per patient") +
+  #geom_text(aes(label = cellProportion), size = 6, hjust = 0, vjust = 0.5, position = "stack") +
+  theme(axis.text = element_text(size = 18),
+        plot.title = element_text(size = 24, face = "bold"),
+        axis.title = element_text(size = 18, face = "bold"),
+        axis.ticks.y = element_blank(),
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 16)
+  ) +
+  coord_flip()
+
+p13 <- ggplot(cluster_patient, aes(x=cluster, y=cellProportion, fill=patient)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ggtitle("Cell proportion of each cluster per patient") +
+  theme_classic() +
+  scale_fill_manual(values = patient_colors) +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0,0), 
+                     breaks = seq(0,100,20)
+  ) +
+  ylab("Cell proportion per patient") +
+  #geom_text(aes(label = cellProportion), size = 6, hjust = 0, vjust = 0.5, position = "stack") +
+  theme(axis.text = element_text(size = 18),
+        plot.title = element_text(size = 24, face = "bold"),
+        axis.title = element_text(size = 18, face = "bold"),
+        axis.ticks.y = element_blank(),
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 16)
+  ) +
+  coord_flip()
+plot_grid(p12, p13, labels = "AUTO", ncol = 1)
+
+pdf("CrOv.9patients_validation_TNK.subcluster_barplot_cluster.distribution_per.patient_20221218.pdf", width = 15, height = 20)
+print(plot_grid(p12, p13, labels = "AUTO", ncol = 1))
+dev.off()
+
+```
+
+
+# ---------------------------------------------------------------
+## Table of cell number & proportion of each cluster per patient
+```{r table of cell number & proportion of each cluster per patient, include=TRUE, results='markup'}
+
+clusterPatient <- cluster_patient %>% 
+  pivot_wider(names_from = patient, values_from = c(cellNumber, cellProportion)) %>% 
+  rename_with(~ gsub("cellNumber", "Nb", .x, fixed = T)) %>% 
+  rename_with(~ gsub("cellProportion", "Prop", .x, fixed = T))
+kbl(clusterPatient, caption = "Cell number & proportion of each cluster per patient") %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed", "responsive"), 
+                full_width = F, position = "left", fixed_thead = T, font_size = 12) %>% 
+  scroll_box(width = "100%", height = "200px")
+
+```
+
+
+# ---------------------------------------------------------------------------
+## Distribution of reactive/nonreactive TCRcells per patient
+```{r umap - TCRreactivity per patient, include=TRUE, fig.width=15, fig.height=13}
+
+p14 <- DimPlot(intgHarTNK, reduction = "umap", label = F, 
+        group.by = "annotated_reactivity", split.by = "patient", ncol = 3, pt.size = 0.2,
+        order = c("reactive", "nonreactive", "ND"),
+        cols = c("grey80", "blue", "red")
+) +
+  plot_annotation("Distribution of TCRs with annotated reactivity on clusters per patient",
+                  theme = theme(plot.title = element_text(size = 24, face = "bold"))
+  )
+p14
+
+pdf("CrOv.9patients_validation_TNK.subcluster_umap_reactivity.status_per.patient_20221218.pdf", width = 15, height = 13)
+print(p14)
+dev.off()
+
+```
+
+
+# ---------------------------------------------------------------------------
+## Cell number with known reactivity per cluster and per patient
+```{r TCRreactivity-cell proportion per cluster & patient, include=TRUE, fig.width=12, fig.height=10}
+
+cluster_reactivity <- as.data.frame(table(Idents(intgHarTNK), intgHarTNK$annotated_reactivity))
+names(cluster_reactivity) <- c("cluster", "reactivity", "cellNumber")
+cluster_reactivity <- cluster_reactivity %>% filter(reactivity != "ND")
+cluster_reactivity$reactivity <- factor(cluster_reactivity$reactivity, levels = c("nonreactive", "reactive"))
+
+p15 <- ggplot(cluster_reactivity, aes(x = cluster, y = cellNumber, fill = reactivity)) +
+  geom_col(position = "stack") + # geom_col does NOT use stat as geom_bar
+  ggtitle("Number of known-reactivity cells per cluster in TNK.validation.subset.9patients") +
+  theme_classic() +
+  scale_fill_manual(values = c("lightblue", "tomato")) +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0.03,0), breaks = c(0, 10, 25, 50, 100, 150, 200)) +
+  ylab("Total cell number with known reactivity") +
+  #geom_text(aes(label = cellNumber), size = 4.5, hjust = 0, vjust = 0.5, position = "stack") +
+  theme(axis.text = element_text(size = 14),
+        plot.title = element_text(size = 20, face = "bold"),
+        axis.title = element_text(size = 16),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "black", size = 0.5, linetype = "dotted"), 
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 16)
+        ) +
+  coord_flip()
+
+patient_reactivity <- as.data.frame(table(intgHarTNK$patient, intgHarTNK$annotated_reactivity))
+names(patient_reactivity) <- c("patient", "reactivity", "cellNumber")
+patient_reactivity <- patient_reactivity %>% filter(reactivity != "ND")
+patient_reactivity$reactivity <- factor(patient_reactivity$reactivity, levels = c("nonreactive", "reactive"))
+
+p16 <- ggplot(patient_reactivity, aes(x = patient, y = cellNumber, fill = reactivity)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ggtitle("Number of known-reactivity cells per patient in TNK.validation.subset.9patients") +
+  theme_classic() +
+  scale_fill_manual(values = c("lightblue", "tomato")) +
+  scale_x_discrete(expand = c(0,0, 0,0)) +
+  scale_y_continuous(expand = c(0,0, 0,0),
+                     breaks = c(0, 10, 25, 50, 100, 150, 200, 300)) +
+  ylab("Total cell number with known reactivity") +
+  #geom_text(aes(label = cellNumber), size = 4.5, hjust = 1, vjust = 0.5, position = "stack") +
+  theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size = 20, face = "bold"),
+        panel.grid.major.x = element_line(colour = "black", size = 0.5, linetype = "dotted"), 
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 16),
+        axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+#axis.text.x , angle = -30, hjust = 0.3, vjust = -0.05
+plot_grid(p15, p16, labels = "AUTO", ncol = 1, rel_heights = c(2, 0.8))
+
+pdf("CrOv.9patients_validation_TNK.subcluster_barplot_cell.number_with.known.reactivity_per.cluster.&.patient_20221218.pdf", width = 12, height = 10)
+plot_grid(p15, p16, labels = "AUTO", ncol = 1, rel_heights = c(2, 0.8))
+dev.off()
+
+rm(cluster_reactivity, patient_reactivity); gc()
+```
+
+
+# -----------------------------------------------------------------------------------
+## Violin plots of lineage gene expression on cell subset of clones with known reactivity
+```{r violin reactivity TNK lineage, include=TRUE, fig.width=26, fig.height=9}
+
+subset.reactivity <- subset(intgHarTNK, subset = annotated_reactivity == "ND", invert = TRUE)
+celltype <- c("CD4", "CD8A", "CD8B", "TRGV9", "KIR2DL4", "CD79B", "C1QA", "CD1C")
+
+p17 <- VlnPlot(subset.reactivity, 
+        features = rev(celltype), 
+        group.by = "cloneID", #pt.size = 1,
+        fill.by = "feature", stack = T, flip = T
+        ) +
+  xlab("clone") + ylab("expression level") +
+  ggtitle("lineage marker expression per clone") +
+  scale_x_discrete(expand = c(0,1.5, 0,0)) +
+  theme(title = element_text(size = 18, face = "bold"),
+        axis.text.y = element_text(size = 6))
+p17
+pdf("CrOv.9patients_validation_TNK.subcluster_violinPlot_lineage.marker.expression_per_clone_20221218.pdf", width = 26, height = 12)
+print(p17)
+dev.off()
+
+p18 <- VlnPlot(subset.reactivity, 
+        features = rev(c("CD4", "CD8A", "CD8B", "TRGV9", "KIR2DL4", "CD79B", "C1QA", "CD1C")), 
+        group.by = "validation_status", #pt.size = 1,
+        fill.by = "feature", stack = T, flip = T
+        ) +
+  xlab("clone") + ylab("expression level") +
+  ggtitle("lineage marker expression per validated clone-group") +
+  scale_x_discrete(expand = c(0,1.5, 0,0)) +
+  theme(title = element_text(size = 18, face = "bold"),
+        axis.text.y = element_text(size = 6))
+p18
+pdf("CrOv.9patients_validation_TNK.subcluster_violinPlot_lineage.marker.expression_per_validated.clone_20221218.pdf", width = 4, height = 5)
+print(p18)
+dev.off()
+
+p19 <- VlnPlot(subset.reactivity, 
+        features = rev(c("CD4", "CD8A", "CD8B", "TRGV9", "KIR2DL4", "CD79B", "C1QA", "CD1C")), 
+        group.by = "topTRscore_clone", #pt.size = 1,
+        fill.by = "feature", stack = T, flip = T
+        ) +
+  xlab("clone") + ylab("expression level") +
+  ggtitle("lineage marker expression per top-TR-score clone") +
+  scale_x_discrete(expand = c(0,1.5, 0,0)) +
+  theme(title = element_text(size = 18, face = "bold"),
+        axis.text.y = element_text(size = 6))
+p19
+pdf("CrOv.9patients_validation_TNK.subcluster_violinPlot_lineage.marker.expression_per_topTRscore.clone_20221218.pdf", width = 10, height = 8)
+print(p19)
+dev.off()
+
+
+```
+
+
+### -----------------------------------------------------------
+### Cluster-specific markers from DE analysis with LR, fdr0.01. min.pct0.25
+```{r Find cluster-specific markers}
+
+# For each cluster, find genes DE compared to all other clusters
+Markers <- FindAllMarkers(intgHarTNK, 
+                                  only.pos = F, 
+                                  min.pct = 0.25, # at least 25% of cells in either cluster express the genes
+                                  logfc.threshold = 0,   # 0.58496 = 1.5x, default=0.25
+                                  min.cells.feature = 3,
+                                  min.cells.group = 3,
+                                  pseudocount.use = 0.1, # 1 as default
+                                  return.thresh = 1, # p-value
+                                  assay = 'RNA',
+                                  slot = 'data',
+                                  test.use = "LR" # best scDE method according to Libra package is LR
+)
+
+Markers <- data.table::setnames(Markers, old = c("avg_log2FC", "p_val_adj"), new = c("log2FC", "padj"))
+Markers <- Markers %>% group_by(cluster) %>% arrange(cluster) 
+write.table(Markers,
+            paste0("CrOv.9patients_validation_TNK.subcluster_all_minpct25_DE.markers_", "LR",
+                   "_20221218.txt"),
+            append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+
+sigMarkers <- Markers %>% filter(padj <= 0.05 & abs(log2FC) >= 0.25) %>% arrange(cluster, desc(log2FC))
+write.table(sigMarkers,
+            paste0("CrOv.9patients_validation_TNK.subcluster_fdr0.05_lfc0.25_minpct25_DE.markers_", "LR",
+                   "_20221218.txt"),
+            append = F, quote = F, sep = "\t", row.names = F, col.names = T)
+
+rm(clustInfo, cluster_TCR, cluster_patient, clusterPatient, cell_proportion, cellNumber); invisible(gc()); gc()
+
+```
+
+
+# -----------------------------------------------------------------------------------------------------
+## Volcano plots of cluster-specific markers
+```{r Volcano plots, echo=FALSE, include=TRUE, fig.width=11, fig.height=9, results='hide'}
+
+cl <- as.character(c(unique(Markers$cluster)))
+
+pdf("CrOv.9patients_validation_TNK.subcluster_volcanoPlots_all.clusters.DE_LR_lfc0.25_fdr5_minpct25_20221218.pdf", width = 11, height = 9)
+for (k in cl) {
+  res <- filter(Markers, cluster == k) %>% mutate(revPval = -log10(padj)) %>% arrange(desc(revPval))
+  
+  # create variable point size depending on padj
+  noInf <- res %>% filter(revPval != Inf) # this is to get the non-Inf max value
+  res <- res %>% mutate(adjRevPval = ifelse(revPval == Inf, max(noInf$revPval), revPval)) %>% 
+    mutate(ptSize = 5*adjRevPval/max(adjRevPval))
+
+  keyvals <- ifelse(
+  res$padj < 0.05 & res$log2FC >= 1, "red3",
+    ifelse(res$padj < 0.05 & res$log2FC <= -1, "royalblue",
+           ifelse(res$padj < 0.05 & (res$log2FC < 1 & res$log2FC > 0), "goldenrod",
+                  ifelse(res$padj < 0.05 & (res$log2FC < 0 & res$log2FC > -1), "forestgreen",
+                         "grey70"))))
+
+  names(keyvals)[keyvals == "red3"] <- "UP at log2FC>=1"
+  names(keyvals)[keyvals == "goldenrod"] <- "UP at 0<log2FC<1"
+  names(keyvals)[keyvals == "forestgreen"] <- "DOWN at -1<log2FC<0"
+  names(keyvals)[keyvals == "royalblue"] <- "DOWN at log2FC<=-1"
+  names(keyvals)[keyvals == "grey70"] <- "NS"
+
+  top60 <- res %>% arrange(desc(ptSize)) %>% top_n(n = 60)
+  print(EnhancedVolcano(res,
+                lab = res$gene,
+                x = "log2FC",
+                y = "padj",
+                title = paste0("cluster", k, " - markers at fdr0.05"),
+                subtitle = "",
+                xlab = "log2 fold change",
+                ylab = "-log10(adjusted p-value)",
+                xlim = c(min(res$log2FC)*1.1, max(res$log2FC)*1.1),
+                #ylim = c(0, max(-log10(res$p_val_adj)*1.1)),
+                pCutoff = 0.05,
+                FCcutoff = 1,
+                cutoffLineType = "dashed",
+                pointSize = res$ptSize,
+                axisLabSize = 14,
+                labSize = 3,
+                labFace = "bold",
+                boxedLabels = TRUE,
+                #parseLabels = FALSE,
+                colCustom = keyvals,
+                # selectLab = res$gene[which(names(keyvals) %in% c("significantly up-regulated",
+                #                                                  "significantly down-regulated"))],
+                selectLab = c(top60$gene),
+                colAlpha = 0.7,
+                legendPosition = "top",
+                drawConnectors = TRUE,
+                widthConnectors = 0.1,
+                arrowheads = FALSE,
+                max.overlaps = 25,
+                maxoverlapsConnectors = 25,
+                gridlines.major = FALSE,
+                gridlines.minor = FALSE,
+                border = "full") + 
+          ggplot2::scale_x_continuous(breaks = seq(round(min(res$log2FC)), round(max(res$log2FC)), 0.5))
+        )
+  rm(keyvals, noInf, res, k); invisible(gc()); gc()
+}
+dev.off()
+
+```
+
+
+
+```{r feature plot, top cluster markers, include=TRUE, fig.width=18, fig.height=12, eval=FALSE}
+## Feature plots for top10 upregulated markers (by average log2FC) of each cluster
+
+#Idents(intgHarTNK) <- "subcluster.TNK"
+
+for (k in cl) {
+  #k <- length()
+  pdf("CrOv.9patients_validation_intgHarTNK_featurePlots_top10_DE.markers_per.subcluster_20221218.pdf",width = 16, height = 5*length(i)/3)
+  top10 <- sigMarkers %>% filter(cluster == k) %>% top_n(10, wt = log2FC)
+  print(FeaturePlot(intgHarTNK,
+                    features = top10$gene,
+                    reduction = "umap", slot = "data",
+                    cols = rev(brewer.pal(11, "Spectral")),
+                    label = TRUE, repel = FALSE, label.size = 6, label.color = "magenta",
+                    pt.size = 0.1, order = TRUE, by.col = TRUE, combine = T, ncol = 4
+  ) +
+    plot_annotation(title = paste("top10 markers of cluster", k),
+                    theme = theme(plot.title = element_text(size = 24))
+    )
+  )
+  dev.off()
+}
+
+```
+
+
+# ----------------------------------------------------------------------------
+# Feature plots for selected markers on umap
+
+```{r CD8-TIL markers from Paul Gueguen}
+major.lineage = c("CD4", "CD8A", "CD8B", "KIR2DL4", "TRGV9", "TRDC", "CD79B", "C1QA")
+naive = c("LEF1", "TCF7", "SELL")
+CM = c("CCR7", "IL7R", "LMNA")
+EM = c("GZMK", "CXCR3", "CXCR4")
+TEMRA = c("KLRG1", "CX3CR1", "FGFBP2")
+Trm = c("ZNF683", "CXCR6", "ITGAE")
+Tpex = c("XCL1", "CD200", "GNG4")
+Tex = c("HAVCR2", "PDCD1", "LAYN")
+MAIT = c("SLC4A10", "TRAV1-2", "KLRB1")
+```
+
+
+```{r JC.Oliveira marker lists}
+naive.memory = c("SELL", "CCR7", "IL7R", "FAS", "CD27", "ITGAE", "ITGAL", "ITGAM", "ITGAX", "LTB")
+exhaustion.inhibition = c("PDCD1", "TIGIT", "HAVCR2", "LAG3", "CTLA4", "CD244", "KLRG1", "TNFRSF14", "BTLA", "CD160")
+activation = c("CD38", "CD28", "CD69", "CD40LG", "ENTPD1", "IL2RA", "ICOS", "TNFRSF4", "TNFRSF9", "HLA-DRA")
+effector.cytokine = c("GZMA", "GZMB", "GZMH", "GZMK", "GZMM", "PRF1", "NKG7", "GNLY", "IFNG", "FASLG", "TNF", "IL17A", "IL2")
+effector.molecule = c("CXCL13", "CCL3", "CCL4", "CCL5", "CST7")
+transcription.factor = c("LEF1", "TCF7", "EOMES", "NR4A1", "TBX21", "PRDM1", "TOX", "GATA3", "ID2", "ID3", "ZNF683", "FOXP3", "MKI67", "TOP2A", "FOS", "JUN")
+NK.gamma.delta = c("KLRD1", "KIR2DL4", "KLRC3", "TRGV9", "TRDV1", "TRDC")
+chemokine.receptor = c("CCR4", "CCR5", "CXCR3", "CXCR4", "CXCR5")
+to.be.classified = c("CD74", "CD52", "ANXA1", "VCAM1", "CD200", "ISG15", "ITGA4")
+
+```
+
+
+
+```{r featureplot of markers}
+
+markerFeaturePlot <- function(i,k) {
+  pdf(paste0("CrOv.9patients_validation_TNK.subcluster_featurePlots_", k, "_20221218.pdf"), width = 16, height = 5*length(i)/3)
+  print(FeaturePlot(intgHarTNK,
+              features = i,
+              reduction = "umap", slot = "data",
+              cols = rev(brewer.pal(11, "Spectral")),
+              label = TRUE, repel = TRUE, label.size = 4, label.color = "magenta",
+              order = TRUE, by.col = TRUE, combine = T, ncol = 3
+              ) +
+  plot_annotation(title = paste(k, "markers"),
+                  theme = theme(plot.title = element_text(size = 24, face = "bold"))
+                  ))
+  dev.off()
+}
+
+markerFeaturePlot(major.lineage, "PG_major.lineage")
+
+markerFeaturePlot(Trm, "PG_resident.memory")
+
+markerFeaturePlot(EM, "PG_effector.memory")
+markerFeaturePlot(effector.cytokine, "JC.Oliveira_effector.cytokine")
+markerFeaturePlot(effector.molecule, "JC.Oliveira_effector.molecule")
+
+markerFeaturePlot(Tpex, "PG_progenitor.exhausted")
+markerFeaturePlot(Tex, "PG_exhausted")
+markerFeaturePlot(exhaustion.inhibition, "JC.Oliveira_exhaustion.inhibition")
+
+markerFeaturePlot(TEMRA, "PG_effector.memory.RA")
+
+markerFeaturePlot(NK.gamma.delta, "JC.Oliveira_NK.gamma.delta")
+
+markerFeaturePlot(MAIT, "PG_MAIT")
+
+markerFeaturePlot(naive, "PG_naive")
+markerFeaturePlot(CM, "PG_central.memory")
+markerFeaturePlot(naive.memory, "JC.Oliveira_naive.memory")
+
+markerFeaturePlot(chemokine.receptor, "JC.Oliveira_chemokine.receptor")
+
+markerFeaturePlot(activation, "JC.Oliveira_activation")
+
+markerFeaturePlot(transcription.factor, "JC.Oliveira_transcription.factor")
+
+```
+
+
+
+# ------------------------------------------------------------------------------
+## Violin plots for top10 (by avg log2FC) DE genes per cluster
+```{r violin plots top10 log2FC}
+
+cl <- c(levels(Idents(intgHarTNK)))
+    
+stackedViolin.top10 <- function(k) {
+  top10 <- sigMarkers %>% filter(cluster == k) %>% slice_max(log2FC, n = 10)
+  #return(top10)
+  print(VlnPlot(intgHarTNK, features = top10$gene, #pt.size = 1,
+        fill.by = "feature", stack = T, flip = T
+        ) +
+    xlab("cluster") + ylab("expression level") +
+    ggtitle(paste("top10.log2FC - DE genes of cluster", k)) +
+    scale_x_discrete(expand = c(0,0, 0,0)) +
+    theme(title = element_text(size = 16, face = "bold"),
+          axis.text.y = element_text(size = 12))
+        )
+}
+#stackedViolin.top10("0")
+
+pdf(paste0("CrOv.9patients_validation_TNK.subcluster_violinPlots_top10.log2FC_DE.genes_per.cluster_20221218.pdf"),
+    width = 10, height = 8)
+for (k in cl) {
+  stackedViolin.top10(k)
+}
+dev.off()
+    
+```
+
+
+# ----------------------------------------------------------------------
+## Violin plots of selected marker expression on TNK subset
+```{r violin TNK, fig.width=10, fig.height=6, include=TRUE}
+
+# re-shuffle subcluster order for violin plots
+Idents(intgHarTNK) <- factor(Idents(intgHarTNK),
+                              levels = c("2","13","3","7_1","8_0","9_0","15",
+                                         "8_1","9_1",
+                                         "1","6","4","0","5","19","7_0","12",
+                                         "10","14","11","17","18","16"
+                                         ))
+stackedViolin <- function(m,i) {
+    pdf(paste0("CrOv.9patients_validation_TNK.subcluster_violinPlots_", m, ".markers_20221218.pdf"),
+        width = 10, height = length(i))
+    print(VlnPlot(intgHarTNK, features = i, #pt.size = 1,
+          fill.by = "feature", stack = T, flip = T
+          ) +
+      xlab("cluster") + ylab("expression level") +
+      ggtitle(paste(m, "signature per cluster")) +
+      scale_x_discrete(expand = c(0,0, 0,0)) +
+      theme(title = element_text(size = 18, face = "bold"),
+            axis.text.y = element_text(size = 14))
+          )
+    dev.off()
+}
+
+stackedViolin("PG_major.lineage", rev(major.lineage))
+
+stackedViolin("PG_resident.memory", Trm)
+
+stackedViolin("PG_effector.memory", EM)
+stackedViolin("JC.Oliveira_effector.cytokine", rev(effector.cytokine))
+stackedViolin("JC.Oliveira_effector.molecule", effector.molecule)
+
+stackedViolin("PG_progenitor.exhausted", Tpex)
+stackedViolin("PG_exhausted", Tex)
+stackedViolin("JC.Oliveira_exhaustion.inhibition", rev(exhaustion.inhibition))
+
+stackedViolin("PG_effector.memory.RA", TEMRA)
+
+stackedViolin("JC.Oliveira_NK.gamma.delta", NK.gamma.delta)
+
+stackedViolin("PG_MAIT", MAIT)
+
+stackedViolin("PG_naive", naive)
+stackedViolin("PG_central.memory", CM)
+stackedViolin("JC.Oliveira_naive.memory", rev(naive.memory))
+
+stackedViolin("JC.Oliveira_chemokine.receptor", chemokine.receptor)
+
+stackedViolin("JC.Oliveira_activation", activation)
+
+stackedViolin("JC.Oliveira_transcription.factor", transcription.factor)
+stackedViolin("JC.Oliveira_to.be.classified", to.be.classified)
+
+```
+
+
+## Heatmap of lineage marker expression per cluster
+```{r heatmap TNK, fig.width=30, fig.height=11, include=TRUE}
+
+stackedHeatmap <- function(s,i,k,l) {
+  DoHeatmap(s, features = i) +
+    ggtitle(paste("Heatmap of ", k, "marker expression per", l)) +
+    theme(title = element_text(size = 18, face = "bold"),
+          axis.text.y = element_text(size = 12, face = "bold"),
+          legend.text = element_text(size = 13)
+          )
+}
+p20 <- stackedHeatmap(intgHarTNK, major.lineage, "major lineage", "cluster")
+p20
+
+pdf("CrOv.9patients_validation_TNK.subcluster_heatmap_major.lineage.markers_per_cluster_20221218.pdf", width = 27, height = 12)
+print(p20)
+dev.off()
+```
+
+
+
+# 20230125 STARTS HERE!!!
+# ------------------------------------------------
+# UMAP of TNK subset with cluster labels
+```{r label clusters on umap, fig.width=17, fig.height=12, include=TRUE}
+intgHarTNK <- readRDS("../20221218_TNK_validation/intgHarTNK_subclusters7.8.9_factorized_33pc.k30_1.3res_umap_20221218.rds")
+intgHarTNK <- RenameIdents(intgHarTNK,
+                           `0` = "c0_CD4.Tem.act", `1` = "c1_Treg", `2` = "c2_CD8.Trm",
+                           `3` = "c3_CD8.Tem", `4` = "c4_CD4.Tem", `5` = "c5_CD4.Tn.cm",
+                           `6` = "c6_Treg.act", `7_0` = "c7-0_CD4.Tex.CXCL13", `7_1` = "c7-1_CD8.Tex.CXCL13",
+                           `8_0` = "c8-0_CD8.Temra", `8_1` = "c8-1_NK.FGFBP2",
+                           `9_0` = "c9-0_CD8.Trm.NK/gd-like", `9_1` = "c9-1_NK.XCL", `10` = "c10_Tcycling",
+                           `11` = "c11_T.MALAT1", `12` = "c12_CD4.Tdys.CXCL13", `13` = "c13_CD8.Trm.hsp", 
+                           `14` = "c14_T.metallotheinin", `15` = "c15_CD8.MAIT", `16` = "c16_doublets",
+                           `17` = "c17_T.apoptotic", `18` = "c18_Tfh.ISG", `19` = "c19_CD4.Tact.cycling.CXCR3")
+
+intgHarTNK$subcluster.TNK.labels <- Idents(intgHarTNK)
+
+cluster_colors_TNK <- c("#D6E5A5", "#E554A2", "#DFB699", "#D4BDDF", "#71A0D6", "#D88BDC",
+                        "#77A464", "#DBBA57", "#7EC7D6", #7_0, 7_1
+                        "#DD90AD", "#B0E8E8", "#8638E3", "#DAE957", #9_0, 9_1
+                        "#8F7A6F", "#E28E60", "#78E4CD", "#7DE84D", #13
+                        "#7E66B4", "#7F82E9", "#8BEA95", "#DB4E5E", "#5CE499", "#D851DB")
+
+p9 <- DimPlot(intgHarTNK, reduction = "umap", cols = cluster_colors_TNK,
+        label = T, repel = T, label.size = 6
+        )
+p9
+pdf("CrOv.9patients_validation_TNK.subcluster_umap_with.new.cluster.labels_20230301.pdf", width = 17, height = 12)
+print(p9)
+dev.off()
+
+```
+
+
+```{r reactomeGSA}
+
+# intgHarTNK <- readRDS("../20221218_TNK_validation/intgHarTNK_subclusters7.8.9_33pc.k30_1.3res_umap_20221218.rds")
+# intgHarTNK$orig.ident <- Idents(intgHarTNK)
+
+gsva_res <- ReactomeGSA::analyse_sc_clusters(intgHarTNK, verbose = T,
+                                             assay = "RNA",
+                                             slot = "counts",
+                                             create_reactome_visualization = T)
+saveRDS(gsva_res, "CrOv.9patients_validation_reactomeGSA_analyse.sc.clusters_results_20230306.rds")
+gsva_res
+
+pathway_data <- pathways(gsva_res)
+View(pathway_data)
+
+```
+
+
+```{r explore results, fig.width=15, fig.height=15}
+
+# plot pca
+plot_gsva_heatmap(gsva_res, dendrogram = "none")
+gsva_result <- gsva_res # BUG!!! Need to assign "gsva_result" for plot_gsva_pca() to work
+plot_gsva_pca(gsva_result) +
+  geom_text(aes(label = sample), 
+            size = 20/.pt,
+            #colour = cluster_colors_TNK,
+            fontface = "bold",
+            nudge_x = 0,
+            nudge_y = 0.01,
+            check_overlap = F) +
+  theme(legend.position = "none")
+  
+
+# find the maximum differently expressed pathway
+max_diff <- do.call(rbind, apply(pathway_data, 1, function(row) {
+    values <- as.numeric(row[2:length(row)])
+    return(data.frame(name = row[1], min = min(values), max = max(values)))
+}))
+
+max_diff$diff <- max_diff$max - max_diff$min
+max_diff <- max_diff[order(max_diff$diff, decreasing = T), ]
+
+
+```
+
+
