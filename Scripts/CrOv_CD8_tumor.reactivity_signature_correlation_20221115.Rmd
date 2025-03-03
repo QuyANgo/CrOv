@@ -1,0 +1,207 @@
+---
+title: "CrOv - tumor reactivity signature correlations - 20221115"
+author: "Quy A. Ngo"
+date: "15-Nov-2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", include = FALSE, echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE)
+options(future.globals.maxSize = 48000 * 1024^2)
+setwd("/home/localadmin/Desktop/RESEARCH/SBobisse/Analysis/CrOv_TCR.GEX/20221115_correlation/")
+```
+
+
+```{r load libraries}
+library(data.table)
+library(GeneOverlap)
+library(tidyverse)
+library(nVennR)
+library(ggVennDiagram)
+library(grImport2)
+library(rsvg)
+#data(GeneOverlap)
+```
+
+
+```{r load signatures}
+
+getGene <- function(cohort) {
+  fileList <- list.files(path = "../Signatures", recursive = T, pattern = cohort, full.names = T)
+  UP <- data.table::fread(fileList) %>% filter(log2FC > 0)
+  UP <- c(UP$gene)
+  DN <- data.table::fread(fileList) %>% filter(log2FC < 0)
+  DN <- c(DN$gene)
+  geneList <- list(UP, DN)
+  names(geneList) <- c(paste0(cohort,".UP"), paste0(cohort,".DN"))
+  return(geneList)
+}
+
+CrOv <- getGene("CrOv")
+ATATIL <- getGene("ATATIL")
+Lowery <- getGene("Lowery")
+Oliveira <- getGene("Oliveira")
+
+
+getRank <- function(cohort) {
+  fileList <- list.files(path = "../Signatures", recursive = T, pattern = cohort, full.names = T)
+  rk <- data.table::fread(fileList) %>% 
+    mutate(rank.score = log2FC*(-log10(pVal))) %>% 
+    select(gene, rank.score) %>% 
+    arrange(-rank.score) %>% 
+    data.table::setnames("rank.score", cohort)
+  return(rk)
+}
+
+CrOv.rk <- getRank("CrOv")
+ATATIL.rk <- getRank("ATATIL")
+Lowery.rk <- getRank("Lowery")
+Oliveira.rk <- getRank("Oliveira")
+
+```
+
+
+```{r overlap analysis}
+
+# CrOv.ATATIL <- newGeneOverlap(CrOv, ATATIL, 
+#                               genome.size = gs.RNASeq)
+# CrOv_ATATIL <- testGeneOverlap(CrOv_ATATIL)
+# print(CrOv_ATATIL)
+# 
+# CrOv_Lowery <- newGeneOverlap(CrOv, Lowery, 
+#                               genome.size = gs.RNASeq)
+# CrOv_Lowery <- testGeneOverlap(CrOv_Lowery)
+# print(CrOv_Lowery)
+# 
+# CrOv_Oliveira <- newGeneOverlap(CrOv, Oliveira, 
+#                                 genome.size = gs.RNASeq)
+# CrOv_Oliveira <- testGeneOverlap(CrOv_Oliveira)
+# print(CrOv_Oliveira)
+
+```
+
+
+```{r overlap matrix}
+
+# gM1 <- newGOM(CrOv, ATATIL, gs.RNASeq)
+# getMatrix(gM1, "pval")
+# getMatrix(gM1, "odds.ratio")
+# 
+# drawHeatmap(gM1)
+
+
+All.UP <- list()
+All.UP$CrOv.UP <- CrOv$CrOv.UP
+All.UP$ATATIL.UP <- ATATIL$ATATIL.UP
+All.UP$Lowery.UP <- Lowery$Lowery.UP
+All.UP$Oliveira.UP <- Oliveira$Oliveira.UP
+
+All.DN <- list()
+All.DN$CrOv.DN <- CrOv$CrOv.DN
+All.DN$ATATIL.DN <- ATATIL$ATATIL.DN
+All.DN$Lowery.DN <- Lowery$Lowery.DN
+All.DN$Oliveira.DN <- Oliveira$Oliveira.DN
+
+All <- list()
+All$CrOv.UP <- CrOv$CrOv.UP
+All$ATATIL.UP <- ATATIL$ATATIL.UP
+All$Lowery.UP <- Lowery$Lowery.UP
+All$Oliveira.UP <- Oliveira$Oliveira.UP
+All$CrOv.DN <- CrOv$CrOv.DN
+All$ATATIL.DN <- ATATIL$ATATIL.DN
+All$Lowery.DN <- Lowery$Lowery.DN
+All$Oliveira.DN <- Oliveira$Oliveira.DN
+
+```
+
+
+```{r self matrix}
+
+commonUniqueGene <- unique(unlist(All))
+n <- length(commonUniqueGene)
+#n = 1789
+
+self <- newGOM(All, genome.size = n)
+pval <- getMatrix(self, "pval")
+odds.ratio <- getMatrix(self, "odds.ratio")
+Jaccard <- getMatrix(self, "Jaccard")
+
+saveIndex <- function(idx, name) {
+  write.table(idx, paste0(name, "_similarity.index_tumor.reactive.signatures_CrOv.vs.others_20221116.txt"),
+              quote = F, sep = "\t", row.names = T, col.names = NA)
+}
+mapply(saveIndex, list(pval, odds.ratio, Jaccard), list("pval", "odds.ratio", "Jaccard"))
+
+pdf("CD8_tumor.reactivity.signature_correlation.Jaccard_CrOv.vs.others_20221115.pdf",
+    width = 16, height = 14)
+drawHeatmap(self, what = "Jaccard",
+            log.scale = F, adj.p = F, #cutoff = 0.05, # not using adj.pVal if heatmap.2 throws error
+            ncolused = 3, grid.col = "Oranges", note.col = "black")
+dev.off()
+
+pdf("CD8_tumor.reactivity.signature_correlation.odds.ratio_CrOv.vs.others_20221115.pdf",
+    width = 16, height = 14)
+drawHeatmap(self,
+            log.scale = F, adj.p = F, #cutoff = 0.05, 
+            ncolused = 3, grid.col = "Greens", note.col = "red")
+dev.off()
+
+pdf("CD8_tumor.reactivity.signature_correlation.log2.odds.ratio_CrOv.vs.others_20221115.pdf",
+    width = 16, height = 14)
+drawHeatmap(self,
+            log.scale = T, adj.p = F, #cutoff = 0.05, 
+            ncolused = 3, grid.col = "Blues", note.col = "orange")
+dev.off()
+
+```
+
+
+```{r correlationo of rank lists}
+
+allRank <- full_join(CrOv.rk, ATATIL.rk, by = "gene") %>% 
+  full_join(Lowery.rk, by = "gene") %>% 
+  full_join(Oliveira.rk, by = "gene")
+
+write.table(allRank, "Combined_ranked.tumor.reactive.signature_CrOv.ATATIL.Lowery.Oliveira_20221116.txt",
+            quote = F, sep = "\t", row.names = F)
+```
+
+
+```{r Venn}
+
+pdf("Euler_UP_CrOv.ATATIL.Lowery.Oliveira_20221116.pdf")
+eU <- nVennR::plotVenn(list(CrOv.UP = All$CrOv.UP, 
+                            ATATIL.UP = All$ATATIL.UP, 
+                            Lowery.UP = All$Lowery.UP, 
+                            Oliveira.UP = All$Oliveira.UP))
+eU
+dev.off()
+
+pdf("Euler_DN_CrOv.ATATIL.Lowery.Oliveira_20221116.pdf")
+eU <- nVennR::plotVenn(list(CrOv.DN = All$CrOv.DN, 
+                            ATATIL.DN = All$ATATIL.DN, 
+                            Lowery.DN = All$Lowery.DN, 
+                            Oliveira.DN = All$Oliveira.DN))
+eU
+dev.off()
+
+
+pdf("Venn_tumor.reactive.signatures_CrOv.ATATIL.Lowery.Oliveira_20221116.pdf",
+    width = 11, height = 8)
+ggVennDiagram(
+  All.UP, 
+  label_alpha = 0,
+  label_percent_digit = 2,
+  category.names = c("CrOv.UP","ATATIL.UP","Lowery.UP", "Oliveira.UP")
+  ) +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow")
+ggVennDiagram(
+  All.DN, 
+  label_alpha = 0,
+  label_percent_digit = 2,
+  category.names = c("CrOv.DN","ATATIL.DN","Lowery.DN", "Oliveira.DN")
+  ) +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow")
+dev.off()
+
+```

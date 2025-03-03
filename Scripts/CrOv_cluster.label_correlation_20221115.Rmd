@@ -1,0 +1,215 @@
+---
+title: "CrOv - cluster label correlations - 20221115"
+author: "Quy A. Ngo"
+date: "15-Nov-2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", include = FALSE, echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE)
+options(future.globals.maxSize = 48000 * 1024^2)
+setwd("/home/localadmin/Desktop/RESEARCH/SBobisse/Analysis/CrOv_TCR.GEX/20221114_correlation/")
+```
+
+
+```{r load libraries}
+library(data.table)
+library(GeneOverlap)
+library(tidyverse)
+library(readxl)
+#data(GeneOverlap)
+```
+
+
+```{r load CrOv DE tables}
+
+CrOv.nameList <- list("c13.NK", "c16_1.CD8_CXCL13.chkpHi", "c21.CD8_MAIT", "c1.CD8_EM.cytotoxic", "c4.CD8_RM", "c22.CD8_exTRM", "c14.CD8_NKlike.gdT", "c7.CD8_EMRA", "c18.CD8_prolif.S",
+                 "c0.CD4_Treg", "c8.CD4_Treg.actv", "c12.CD4_naive", "c3.CD4_actv", "c2.CD4_CM.resting", "c15.CD4_pex.CXCL13", "c16_0.CD4_CXCL13.chkptHi", "c23.CD4_MT1x.actv.memory",
+                 "c19.CD4CD8_CM.actv.chkptHi", "c10.CD4CD8_prolif.S-G2M", "c17.CD4CD8_prolif.G2M", "c9.CD4.CD8_CM.EM", "c5.CD4CD8_RP.actv.naive", "c6.CD4CD8_MALAT1", "c11.CD4CD8_apoptotic", 
+                 "c20.CD4-DC.doublet")
+CrOv.clusterList <- list("13", "16_1", "21", "1", "4", "22", "14", "7", "18",
+                       "0", "8", "12", "3", "2", "15", "16_0", "23", 
+                       "19", "10", "17", "9", "5", "6", "11", "20")
+
+CrOv <- read.table("../20220913_TNK1.2_from_20220909/CrOv.9patients_TNK2subset_all.markers_46pc.k30_1.9res_subcluster16_LR_lfc0.25_fdr5_minpct25_20220913.txt", sep = "\t", header = T) %>% 
+  select(gene, log2FC, cluster)
+
+# UP genes
+CrOv.UP.extract <- function(cl, name) {
+  UP <- CrOv %>% filter(cluster == cl & log2FC > 0) %>% select(gene)
+  names(UP) <- name
+  return(UP)
+}
+CrOv.UP <- mapply(CrOv.UP.extract,
+                  CrOv.clusterList,
+                  CrOv.nameList)
+
+# DN genes
+CrOv.DN.extract <- function(cl, name) {
+  DN <- CrOv %>% filter(cluster == cl & log2FC < 0) %>% select(gene)
+  names(DN) <- name
+  return(DN)
+}
+CrOv.DN <- mapply(CrOv.DN.extract,
+                  CrOv.clusterList,
+                  CrOv.nameList)
+
+```
+
+
+```{r load ATATIL T-cell DE table}
+
+ATATIL.nameList <- list("CD8_CX3CR1", "CD8_Early-Exhausted", "CD8_Effector_Memory", "CD8_FOXP3", "CD8_HSP", "CD8_Late-Exhausted", "CD8_Low-Quality", "CD8_Naive-like", "CD8_NK-like", "CD8_typeI_IFN", "NK_cells", "TRegs", "CD4_Resting")
+
+ATATIL <- read_xls("../../Marker_lists/ATATIL_Population_Markers.xls") %>% 
+  select(gene, avg_log2FC, cluster) %>% 
+  data.table::setnames(c("avg_log2FC"), c("log2FC")) %>% 
+  filter(cluster %in% ATATIL.nameList)
+
+# UP genes
+ATATIL.UP.extract <- function(cl, name) {
+  UP <- ATATIL %>% filter(cluster == cl & log2FC > 0) %>% select(gene)
+  names(UP) <- name
+  return(UP)
+}
+ATATIL.UP <- mapply(ATATIL.UP.extract, ATATIL.nameList, ATATIL.nameList)
+
+# DN genes
+ATATIL.DN.extract <- function(cl, name) {
+  DN <- ATATIL %>% filter(cluster == cl & log2FC > 0) %>% select(gene)
+  names(DN) <- name
+  return(DN)
+}
+ATATIL.DN <- mapply(ATATIL.DN.extract, ATATIL.nameList, ATATIL.nameList)
+
+```
+
+
+```{r load Lowery T-cell DE table}
+
+Lowery.nameList <- list("C0.Activated-1", "C1.CD4-Tfh", "C2.CD4-Trm", "C3.Activated-3", "C4.CD8-Trm", "C5.StemLike",
+                     "C6.CD8-Eff", "C7.CD8-EM", "C8.CD8-Mitosis", "C9.CD4-Treg", "C10.Activated-2", "C11.GZMK")
+Lowery.clusterList <- list("C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11")
+
+Lowery <- read_xls("../../Marker_lists/Rosenberg_Lowery_table_s3.xls") %>% 
+  select(Gene, avg_logFC, Cluster) %>% 
+  data.table::setnames(c("Gene", "avg_logFC", "Cluster"), c("gene", "log2FC", "cluster"))
+
+# UP genes
+Lowery.UP.extract <- function(cl, name) {
+  UP <- Lowery %>% filter(cluster == cl & log2FC > 0) %>% select(gene)
+  names(UP) <- name
+  return(UP)
+}
+Lowery.UP <- mapply(Lowery.UP.extract, Lowery.clusterList, Lowery.nameList)
+
+# DN genes
+Lowery.DN.extract <- function(cl, name) {
+  DN <- Lowery %>% filter(cluster == cl & log2FC > 0) %>% select(gene)
+  names(DN) <- name
+  return(DN)
+}
+Lowery.DN <- mapply(Lowery.DN.extract, Lowery.clusterList, Lowery.nameList)
+
+```
+
+
+
+```{r UP overlap matrix}
+
+commonUniqGene <- unique(c(unique(CrOv$gene), unique(ATATIL$gene), Lowery$gene))
+n <- length(commonUniqGene)
+
+# CrOv vs. ATATIL
+UP.CrOv.ATATIL <- newGOM(CrOv.UP, ATATIL.UP, n)
+# getMatrix(UP.CrOv.ATATIL, "pval")
+# getMatrix(UP.CrOv.ATATIL, "odds.ratio")
+# getMatrix(UP.CrOv.ATATIL, "Jaccard")
+
+pdf("UPgenes_CrOv-ATATIL_cluster.labels_correlation.Jaccard_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(UP.CrOv.ATATIL, what = "Jaccard",
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Reds", note.col = "black")
+dev.off()
+
+pdf("UPgenes_CrOv-ATATIL_cluster.labels_correlation.odds.ratio_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(UP.CrOv.ATATIL,
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Reds", note.col = "black")
+dev.off()
+
+
+# CrOv vs. Lowery
+UP.CrOv.Lowery <- newGOM(CrOv.UP, Lowery.UP, n)
+# getMatrix(UP.CrOv.Lowery, "pval")
+# getMatrix(UP.CrOv.Lowery, "odds.ratio")
+# getMatrix(UP.CrOv.Lowery, "Jaccard")
+
+pdf("UPgenes_CrOv-Lowery_cluster.labels_correlation.Jaccard_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(UP.CrOv.Lowery, what = "Jaccard",
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Oranges", note.col = "black")
+dev.off()
+
+pdf("UPgenes_CrOv-Lowery_cluster.labels_correlation.odds.ratio_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(UP.CrOv.Lowery,
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Oranges", note.col = "black")
+dev.off()
+
+```
+
+```{r DN overlap matrix}
+
+commonUniqGene <- unique(c(unique(CrOv$gene), unique(ATATIL$gene), Lowery$gene))
+n <- length(commonUniqGene)
+
+# CrOv vs. ATATIL
+DN.CrOv.ATATIL <- newGOM(CrOv.DN, ATATIL.DN, n)
+# getMatrix(DN.CrOv.ATATIL, "pval")
+# getMatrix(DN.CrOv.ATATIL, "odds.ratio")
+# getMatrix(DN.CrOv.ATATIL, "Jaccard")
+
+pdf("DNgenes_CrOv-ATATIL_cluster.labels_correlation.Jaccard_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(DN.CrOv.ATATIL, what = "Jaccard",
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Greens", note.col = "red")
+dev.off()
+
+pdf("DNgenes_CrOv-ATATIL_cluster.labels_correlation.odds.ratio_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(DN.CrOv.ATATIL,
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Greens", note.col = "red")
+dev.off()
+
+
+# CrOv vs. Lowery
+DN.CrOv.Lowery <- newGOM(CrOv.DN, Lowery.DN, n)
+# getMatrix(DN.CrOv.Lowery, "pval")
+# getMatrix(DN.CrOv.Lowery, "odds.ratio")
+# getMatrix(DN.CrOv.Lowery, "Jaccard")
+
+pdf("DNgenes_CrOv-Lowery_cluster.labels_correlation.Jaccard_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(DN.CrOv.Lowery, what = "Jaccard",
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Blues", note.col = "red")
+dev.off()
+
+pdf("DNgenes_CrOv-Lowery_cluster.labels_correlation.odds.ratio_20221115.pdf",
+    width = 20, height = 18)
+drawHeatmap(DN.CrOv.Lowery,
+            log.scale = F, adj.p = T, cutoff = 0.05, 
+            ncolused = 6, grid.col = "Blues", note.col = "red")
+dev.off()
+
+```
+
+
+
